@@ -1,0 +1,23 @@
+---
+const appUrl = import.meta.env.PUBLIC_APP_URL ?? 'http://localhost:5173'
+---
+
+<section class="max-w-4xl mx-auto px-5 py-20 md:py-28 text-center">
+  <h2 class="font-display text-3xl md:text-5xl font-bold tracking-tight">
+    Stop pasting account numbers into WhatsApp.
+  </h2>
+  <p class="text-text-dim text-lg mt-5 max-w-xl mx-auto">
+    Set up a workspace in 2 minutes. Disburse your first batch today.
+  </p>
+  <div class="mt-8">
+    <a
+      href={`${appUrl}/register`}
+      class="inline-flex items-center gap-2 px-6 py-3.5 rounded-lg bg-gold text-dark font-semibold hover:brightness-110 transition shadow-sm"
+    >
+      Get started
+      <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M5 12h14M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </a>
+  </div>
+</section>

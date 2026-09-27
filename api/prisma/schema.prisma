@@ -1,0 +1,1133 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["relationJoins", "tracing"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ──────────────────────────────────────────────────────────────────
+
+enum PlanTier {
+  STARTER
+  GROWTH
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  EXPIRED
+  CANCELLED
+}
+
+// Mirrors api/src/common/decorators/roles.decorator.ts Role enum.
+enum WorkspaceRole {
+  SUPER_ADMIN
+  ADMIN
+  APPROVER
+  POSTER
+}
+
+enum MandateStatus {
+  INVITED
+  ACTIVE
+  REVOKED
+}
+
+enum RequisitionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  PUSHED_TO_QUEUE
+}
+
+enum QueueItemStatus {
+  PENDING
+  BUDGET_FLAGGED
+  APPROVED_FOR_BATCH
+  BATCHED
+  REJECTED
+}
+
+enum BatchStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  DISBURSING
+  DISBURSED
+  PARTIALLY_FAILED
+  FAILED
+}
+
+enum PayoutStatus {
+  PENDING
+  PROCESSING
+  SUCCESS
+  FAILED
+  REVERSED
+}
+
+enum WalletTransactionType {
+  TOPUP
+  SWEEP_IN
+  DISBURSEMENT
+  FEE
+  REFUND
+  ADJUSTMENT
+  WHT_WITHHOLDING
+}
+
+enum FundingWaitStatus {
+  WAITING
+  FUNDED
+  CANCELLED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  VOID
+}
+
+enum RecurrenceInterval {
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  ANNUALLY
+}
+
+enum SettlementItemStatus {
+  MATCHED
+  UNMATCHED
+  DISPUTED
+}
+
+enum PushPlatform {
+  WEB
+  ANDROID
+  IOS
+}
+
+// ─── Workspace / Auth ───────────────────────────────────────────────────────
+
+model Workspace {
+  id       String @id @default(uuid())
+  name     String
+  slug     String @unique
+  currency String @default("NGN")
+
+  planTier            PlanTier           @default(STARTER) @map("plan_tier")
+  subscriptionStatus  SubscriptionStatus @default(TRIALING) @map("subscription_status")
+  trialEndDate        DateTime?          @map("trial_end_date")
+  subscriptionEndDate DateTime?          @map("subscription_end_date")
+  isGrandfathered     Boolean            @default(false) @map("is_grandfathered")
+
+  businessType String? @map("business_type")
+
+  // Monnify — a workspace disburses out of its own reserved virtual account, funded by transfer
+  // or card top-up; see WalletLedgerEntry/WalletTopup/WalletSweep.
+  monnifyReservedAccountNumber String? @map("monnify_reserved_account_number")
+  monnifyReservedAccountBank   String? @map("monnify_reserved_account_bank")
+  monnifyReservedAccountRef    String? @map("monnify_reserved_account_ref")
+
+  invoicePrefix String @default("INV") @map("invoice_prefix")
+  taxRate       Decimal @default(7.5) @db.Decimal(5, 2) @map("tax_rate")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  members             WorkspaceMember[]
+  clientMandates       ClientMandate[]
+  clientMandateInvites ClientMandateInvite[]
+  vendors             Vendor[]
+  costCenters         CostCenter[]
+  departments         Department[]
+  locations           Location[]
+  payCategories       PayCategory[]
+  budgets             Budget[]
+  requisitions        Requisition[]
+  queueItems          QueueItem[]
+  batches             Batch[]
+  walletLedgerEntries WalletLedgerEntry[]
+  walletTopups        WalletTopup[]
+  walletSweeps        WalletSweep[]
+  payoutFundingWaits  PayoutFundingWait[]
+  whtRates            WhtRate[]
+  whtLedgerEntries    WhtLedger[]
+  customers           Customer[]
+  invoiceTemplates    InvoiceTemplate[]
+  invoices            Invoice[]
+  products            Product[]
+  stockExpenses       StockExpense[]
+  settlementBatches   SettlementBatch[]
+  subscription        WorkspaceSubscription?
+  notificationPrefs   NotificationPref[]
+  pushSubscriptions   PushSubscription[]
+  auditLogs           AuditLog[]
+  idempotencyKeys     IdempotencyKey[]
+
+  @@map("workspaces")
+}
+
+model User {
+  id           String  @id @default(uuid())
+  email        String  @unique
+  passwordHash String  @map("password_hash")
+  firstName    String  @map("first_name")
+  lastName     String  @map("last_name")
+  phone        String?
+
+  isEmailVerified Boolean @default(false) @map("is_email_verified")
+  isActive        Boolean @default(true) @map("is_active")
+  isPlatformAdmin Boolean @default(false) @map("is_platform_admin")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  memberships          WorkspaceMember[]
+  clientMandates       ClientMandate[]
+  security             UserSecurity?
+  emailVerificationTokens EmailVerificationToken[]
+  requisitionsRequested Requisition[] @relation("RequisitionRequestedBy")
+  requisitionsApproved  Requisition[] @relation("RequisitionApprovedBy")
+  queueItemsCreated     QueueItem[]
+  queueItemComments     QueueItemComment[]
+  queueItemAttachments  QueueItemAttachment[]
+  batchesCreated        Batch[] @relation("BatchCreatedBy")
+  batchesApproved       Batch[] @relation("BatchApprovedBy")
+  pushSubscriptions     PushSubscription[]
+  auditLogs             AuditLog[]
+
+  @@map("users")
+}
+
+model EmailVerificationToken {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  token     String   @unique
+  type      String // EMAIL_VERIFY | PASSWORD_RESET | MAGIC_LINK
+  expiresAt DateTime @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("email_verification_tokens")
+}
+
+model UserSecurity {
+  id                 String    @id @default(uuid())
+  userId              String    @unique @map("user_id")
+  pinHash             String?   @map("pin_hash")
+  pinSetAt            DateTime? @map("pin_set_at")
+  idleLogoutMinutes   Int       @default(15) @map("idle_logout_minutes")
+  lastLoginAt         DateTime? @map("last_login_at")
+  failedLoginAttempts Int       @default(0) @map("failed_login_attempts")
+  lockedUntil         DateTime? @map("locked_until")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_security")
+}
+
+// Membership + role of a User within a Workspace — the primary access-control row. A user can
+// belong to multiple workspaces (multi-entity operators, or an accountant added via ClientMandate).
+model WorkspaceMember {
+  id          String        @id @default(uuid())
+  workspaceId String        @map("workspace_id")
+  userId      String        @map("user_id")
+  role        WorkspaceRole @default(POSTER)
+  isActive    Boolean       @default(true) @map("is_active")
+  invitedAt   DateTime      @default(now()) @map("invited_at")
+  joinedAt    DateTime?     @map("joined_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+  @@map("workspace_members")
+}
+
+// An external accountant/bookkeeper granted scoped access to a client workspace — distinct from
+// WorkspaceMember, which is for the operator's own staff.
+model ClientMandate {
+  id          String        @id @default(uuid())
+  workspaceId String        @map("workspace_id")
+  userId      String        @map("user_id")
+  role        WorkspaceRole @default(APPROVER)
+  status      MandateStatus @default(ACTIVE)
+  grantedAt   DateTime      @default(now()) @map("granted_at")
+  revokedAt   DateTime?     @map("revoked_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@map("client_mandates")
+}
+
+model ClientMandateInvite {
+  id          String        @id @default(uuid())
+  workspaceId String        @map("workspace_id")
+  email       String
+  role        WorkspaceRole @default(APPROVER)
+  token       String        @unique
+  status      MandateStatus @default(INVITED)
+  expiresAt   DateTime      @map("expires_at")
+  createdAt   DateTime      @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("client_mandate_invites")
+}
+
+// ─── Vendors, cost tagging, budgets ─────────────────────────────────────────
+
+model Vendor {
+  id                String  @id @default(uuid())
+  workspaceId       String  @map("workspace_id")
+  name              String
+  contactPerson     String? @map("contact_person")
+  phone             String?
+  email             String?
+  bankAccountNumber String? @map("bank_account_number")
+  bankCode          String? @map("bank_code")
+  bankName          String? @map("bank_name")
+  accountName       String? @map("account_name")
+  isBankVerified    Boolean @default(false) @map("is_bank_verified")
+  monnifyRecipientCode String? @map("monnify_recipient_code")
+  isActive          Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  workspace         Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  requisitions      Requisition[]
+  queueItems        QueueItem[]
+  batchItems        BatchItem[]
+  whtLedgerEntries  WhtLedger[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId])
+  @@map("vendors")
+}
+
+model CostCenter {
+  id          String  @id @default(uuid())
+  workspaceId String  @map("workspace_id")
+  name        String
+  isActive    Boolean @default(true) @map("is_active")
+
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  requisitions Requisition[]
+  queueItems   QueueItem[]
+  budgets      Budget[]
+
+  @@unique([workspaceId, name])
+  @@map("cost_centers")
+}
+
+model Department {
+  id          String  @id @default(uuid())
+  workspaceId String  @map("workspace_id")
+  name        String
+  isActive    Boolean @default(true) @map("is_active")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, name])
+  @@map("departments")
+}
+
+model Location {
+  id          String  @id @default(uuid())
+  workspaceId String  @map("workspace_id")
+  name        String
+  address     String?
+  isActive    Boolean @default(true) @map("is_active")
+
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  requisitions Requisition[]
+  queueItems   QueueItem[]
+
+  @@unique([workspaceId, name])
+  @@map("locations")
+}
+
+// Chart-of-accounts category — every queue item / requisition is tagged with one at entry.
+model PayCategory {
+  id          String  @id @default(uuid())
+  workspaceId String  @map("workspace_id")
+  name        String
+  code        String?
+  isActive    Boolean @default(true) @map("is_active")
+
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  budgets      Budget[]
+  requisitions Requisition[]
+  queueItems   QueueItem[]
+  whtRates     WhtRate[]
+
+  @@unique([workspaceId, name])
+  @@map("pay_categories")
+}
+
+// One row per (payCategory, costCenter?, period) — spend against this is checked at queue-item
+// entry and rolled up in BudgetVarianceReport.
+model Budget {
+  id            String      @id @default(uuid())
+  workspaceId   String      @map("workspace_id")
+  payCategoryId String      @map("pay_category_id")
+  costCenterId  String?     @map("cost_center_id")
+  period        DateTime // first of month this budget applies to
+  amount        Decimal     @db.Decimal(14, 2)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  workspace   Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  payCategory PayCategory @relation(fields: [payCategoryId], references: [id], onDelete: Cascade)
+  costCenter  CostCenter? @relation(fields: [costCenterId], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, payCategoryId, costCenterId, period])
+  @@map("budgets")
+}
+
+// ─── Requisition → Queue → Batch → Payout loop ─────────────────────────────
+
+// A staff request for spend that hasn't yet been accepted into the disbursement queue —
+// approved requisitions are pushed into QueueItem by push_requisitions_to_queue.
+model Requisition {
+  id             String            @id @default(uuid())
+  workspaceId    String            @map("workspace_id")
+  requestedById  String            @map("requested_by_id")
+  vendorId       String?           @map("vendor_id")
+  payCategoryId  String?           @map("pay_category_id")
+  costCenterId   String?           @map("cost_center_id")
+  locationId     String?           @map("location_id")
+  description    String
+  amount         Decimal           @db.Decimal(14, 2)
+  status         RequisitionStatus @default(PENDING)
+  approvedById   String?           @map("approved_by_id")
+  approvedAt     DateTime?         @map("approved_at")
+  rejectionReason String?          @map("rejection_reason")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  requestedBy User         @relation("RequisitionRequestedBy", fields: [requestedById], references: [id])
+  approvedBy  User?        @relation("RequisitionApprovedBy", fields: [approvedById], references: [id])
+  vendor      Vendor?      @relation(fields: [vendorId], references: [id])
+  payCategory PayCategory? @relation(fields: [payCategoryId], references: [id])
+  costCenter  CostCenter?  @relation(fields: [costCenterId], references: [id])
+  location    Location?    @relation(fields: [locationId], references: [id])
+  queueItem   QueueItem?
+
+  @@index([workspaceId, status])
+  @@map("requisitions")
+}
+
+// A single vendor invoice sitting in the disbursement queue — added manually or via CSV, one
+// or more get grouped into a Batch.
+model QueueItem {
+  id              String          @id @default(uuid())
+  workspaceId     String          @map("workspace_id")
+  requisitionId   String?         @unique @map("requisition_id")
+  vendorId        String          @map("vendor_id")
+  payCategoryId   String?         @map("pay_category_id")
+  costCenterId    String?         @map("cost_center_id")
+  locationId      String?         @map("location_id")
+  description     String
+  amount          Decimal         @db.Decimal(14, 2)
+  invoiceNumber   String?         @map("invoice_number")
+  invoiceDate     DateTime?       @map("invoice_date")
+  status          QueueItemStatus @default(PENDING)
+  budgetFlag      Boolean         @default(false) @map("budget_flag")
+  createdById     String          @map("created_by_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  requisition Requisition? @relation(fields: [requisitionId], references: [id])
+  vendor      Vendor       @relation(fields: [vendorId], references: [id])
+  payCategory PayCategory? @relation(fields: [payCategoryId], references: [id])
+  costCenter  CostCenter?  @relation(fields: [costCenterId], references: [id])
+  location    Location?    @relation(fields: [locationId], references: [id])
+  createdBy   User         @relation(fields: [createdById], references: [id])
+  attachments QueueItemAttachment[]
+  comments    QueueItemComment[]
+  batchItem   BatchItem?
+
+  @@index([workspaceId, status])
+  @@map("queue_items")
+}
+
+model QueueItemAttachment {
+  id          String   @id @default(uuid())
+  queueItemId String   @map("queue_item_id")
+  fileUrl     String   @map("file_url")
+  fileName    String   @map("file_name")
+  uploadedById String  @map("uploaded_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  queueItem  QueueItem @relation(fields: [queueItemId], references: [id], onDelete: Cascade)
+  uploadedBy User      @relation(fields: [uploadedById], references: [id])
+
+  @@index([queueItemId])
+  @@map("queue_item_attachments")
+}
+
+model QueueItemComment {
+  id          String   @id @default(uuid())
+  queueItemId String   @map("queue_item_id")
+  userId      String   @map("user_id")
+  body        String
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  queueItem QueueItem @relation(fields: [queueItemId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id])
+
+  @@index([queueItemId])
+  @@map("queue_item_comments")
+}
+
+// A named, auto-numbered group of queue items awaiting a single approval + single Monnify
+// disbursement run.
+model Batch {
+  id            String      @id @default(uuid())
+  workspaceId   String      @map("workspace_id")
+  batchNumber   Int
+  status        BatchStatus @default(DRAFT)
+  totalAmount   Decimal     @db.Decimal(14, 2) @map("total_amount")
+  createdById   String      @map("created_by_id")
+  approvedById  String?     @map("approved_by_id")
+  approvedAt    DateTime?   @map("approved_at")
+  disbursedAt   DateTime?   @map("disbursed_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  workspace          Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy          User                @relation("BatchCreatedBy", fields: [createdById], references: [id])
+  approvedBy         User?               @relation("BatchApprovedBy", fields: [approvedById], references: [id])
+  items              BatchItem[]
+  walletLedgerEntries WalletLedgerEntry[]
+  payoutFundingWaits PayoutFundingWait[]
+  settlementBatch    SettlementBatch?
+
+  @@unique([workspaceId, batchNumber])
+  @@index([workspaceId, status])
+  @@map("batches")
+}
+
+model BatchItem {
+  id          String  @id @default(uuid())
+  batchId     String  @map("batch_id")
+  queueItemId String  @unique @map("queue_item_id")
+  vendorId    String  @map("vendor_id")
+  grossAmount Decimal @db.Decimal(14, 2) @map("gross_amount")
+  whtAmount   Decimal @default(0) @db.Decimal(14, 2) @map("wht_amount")
+  netAmount   Decimal @db.Decimal(14, 2) @map("net_amount")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  batch     Batch      @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  queueItem QueueItem  @relation(fields: [queueItemId], references: [id])
+  vendor    Vendor     @relation(fields: [vendorId], references: [id])
+  payout    BatchItemPayout?
+  whtLedger WhtLedger?
+
+  @@index([batchId])
+  @@map("batch_items")
+}
+
+// One Monnify single-transfer attempt per batch item — a batch disburses as N transfers, not one.
+model BatchItemPayout {
+  id                String       @id @default(uuid())
+  batchItemId       String       @unique @map("batch_item_id")
+  monnifyReference  String       @unique @map("monnify_reference")
+  status            PayoutStatus @default(PENDING)
+  failureReason     String?      @map("failure_reason")
+  completedAt       DateTime?    @map("completed_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  batchItem BatchItem @relation(fields: [batchItemId], references: [id], onDelete: Cascade)
+
+  @@map("batch_item_payouts")
+}
+
+// ─── Wallet (funds a workspace disburses from) ─────────────────────────────
+
+model WalletLedgerEntry {
+  id            String                @id @default(uuid())
+  workspaceId   String                @map("workspace_id")
+  type          WalletTransactionType
+  amount        Decimal               @db.Decimal(14, 2) // signed
+  balanceBefore Decimal               @db.Decimal(14, 2) @map("balance_before")
+  balanceAfter  Decimal               @db.Decimal(14, 2) @map("balance_after")
+  batchId       String?               @map("batch_id")
+  reference     String?
+  notes         String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  batch     Batch?    @relation(fields: [batchId], references: [id])
+
+  @@index([workspaceId, createdAt])
+  @@map("wallet_ledger_entries")
+}
+
+// Card/transfer top-up initiated in-app (as opposed to WalletSweep, an unprompted bank transfer
+// the workspace makes directly to its reserved account).
+model WalletTopup {
+  id               String       @id @default(uuid())
+  workspaceId      String       @map("workspace_id")
+  amount           Decimal      @db.Decimal(14, 2)
+  monnifyReference String       @unique @map("monnify_reference")
+  status           PayoutStatus @default(PENDING)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  completedAt DateTime? @map("completed_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("wallet_topups")
+}
+
+// A transfer landing in the workspace's Monnify reserved account, detected via webhook and
+// swept into WalletLedgerEntry as a SWEEP_IN.
+model WalletSweep {
+  id                    String    @id @default(uuid())
+  workspaceId           String    @map("workspace_id")
+  amount                Decimal   @db.Decimal(14, 2)
+  monnifyReference      String    @unique @map("monnify_reference")
+  sourceAccountNumber   String?   @map("source_account_number")
+  sourceAccountName     String?   @map("source_account_name")
+  matchedAt             DateTime? @map("matched_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("wallet_sweeps")
+}
+
+// An approved batch that can't disburse yet because the wallet balance is short — created when
+// approval succeeds but funding doesn't, resolved automatically once a WalletSweep/WalletTopup
+// brings the balance up.
+model PayoutFundingWait {
+  id              String            @id @default(uuid())
+  workspaceId     String            @map("workspace_id")
+  batchId         String            @map("batch_id")
+  requiredAmount  Decimal           @db.Decimal(14, 2) @map("required_amount")
+  availableAmount Decimal           @db.Decimal(14, 2) @map("available_amount")
+  status          FundingWaitStatus @default(WAITING)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  resolvedAt DateTime? @map("resolved_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  batch     Batch     @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@map("payout_funding_waits")
+}
+
+// ─── Withholding tax ────────────────────────────────────────────────────────
+
+// Platform-level default rate per pay category, per Nigerian FIRS WHT schedule; a workspace may
+// not need overrides but the field exists in case a specific vendor relationship needs one.
+model WhtRate {
+  id            String       @id @default(uuid())
+  workspaceId   String?      @map("workspace_id")
+  payCategoryId String?      @map("pay_category_id")
+  ratePercent   Decimal      @db.Decimal(5, 2) @map("rate_percent")
+  description   String?
+
+  workspace   Workspace?   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  payCategory PayCategory? @relation(fields: [payCategoryId], references: [id])
+
+  @@map("wht_rates")
+}
+
+model WhtLedger {
+  id           String    @id @default(uuid())
+  workspaceId  String    @map("workspace_id")
+  batchItemId  String    @unique @map("batch_item_id")
+  vendorId     String    @map("vendor_id")
+  grossAmount  Decimal   @db.Decimal(14, 2) @map("gross_amount")
+  whtRate      Decimal   @db.Decimal(5, 2) @map("wht_rate")
+  whtAmount    Decimal   @db.Decimal(14, 2) @map("wht_amount")
+  taxPeriod    DateTime  @map("tax_period") // first of month withheld
+  remittedAt   DateTime? @map("remitted_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  batchItem BatchItem @relation(fields: [batchItemId], references: [id], onDelete: Cascade)
+  vendor    Vendor    @relation(fields: [vendorId], references: [id])
+
+  @@index([workspaceId, taxPeriod])
+  @@map("wht_ledger")
+}
+
+// ─── Receivables: customers, invoices ───────────────────────────────────────
+
+model Customer {
+  id          String  @id @default(uuid())
+  workspaceId String  @map("workspace_id")
+  name        String
+  email       String?
+  phone       String?
+  address     String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  credits   CustomerCredit[]
+  invoices  Invoice[]
+  subscriptions CustomerSubscription[]
+
+  @@index([workspaceId])
+  @@map("customers")
+}
+
+model CustomerCredit {
+  id         String   @id @default(uuid())
+  workspaceId String  @map("workspace_id")
+  customerId String   @map("customer_id")
+  amount     Decimal  @db.Decimal(14, 2)
+  reason     String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@map("customer_credits")
+}
+
+model InvoiceTemplate {
+  id          String @id @default(uuid())
+  workspaceId String @map("workspace_id")
+  name        String
+  notes       String?
+
+  workspace Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  items     InvoiceTemplateItem[]
+
+  @@map("invoice_templates")
+}
+
+model InvoiceTemplateItem {
+  id          String  @id @default(uuid())
+  templateId  String  @map("template_id")
+  description String
+  quantity    Decimal @default(1) @db.Decimal(10, 2)
+  unitPrice   Decimal @db.Decimal(14, 2) @map("unit_price")
+
+  template InvoiceTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@map("invoice_template_items")
+}
+
+model Invoice {
+  id            String        @id @default(uuid())
+  workspaceId   String        @map("workspace_id")
+  customerId    String        @map("customer_id")
+  invoiceNumber String        @map("invoice_number")
+  status        InvoiceStatus @default(DRAFT)
+  issueDate     DateTime      @map("issue_date")
+  dueDate       DateTime      @map("due_date")
+  subtotal      Decimal       @db.Decimal(14, 2)
+  taxAmount     Decimal       @default(0) @db.Decimal(14, 2) @map("tax_amount")
+  total         Decimal       @db.Decimal(14, 2)
+  amountPaid    Decimal       @default(0) @db.Decimal(14, 2) @map("amount_paid")
+  customerAddress String?     @map("customer_address")
+  notes         String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  workspace   Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  customer    Customer           @relation(fields: [customerId], references: [id])
+  items       InvoiceItem[]
+  payments    InvoicePayment[]
+  sends       InvoiceSend[]
+  recurrence  InvoiceRecurrence?
+  sweeps      InvoiceSweep[]
+  receipts    PaymentReceipt[]
+
+  @@unique([workspaceId, invoiceNumber])
+  @@index([workspaceId, status])
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id          String  @id @default(uuid())
+  invoiceId   String  @map("invoice_id")
+  description String
+  quantity    Decimal @default(1) @db.Decimal(10, 2)
+  unitPrice   Decimal @db.Decimal(14, 2) @map("unit_price")
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@map("invoice_items")
+}
+
+model InvoicePayment {
+  id               String   @id @default(uuid())
+  invoiceId        String   @map("invoice_id")
+  amount           Decimal  @db.Decimal(14, 2)
+  monnifyReference String?  @map("monnify_reference")
+  paidAt           DateTime @default(now()) @map("paid_at")
+
+  invoice  Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  receipts PaymentReceipt[]
+
+  @@map("invoice_payments")
+}
+
+// Auto-generates a new Invoice on a schedule from a template.
+model InvoiceRecurrence {
+  id            String              @id @default(uuid())
+  invoiceId     String              @unique @map("invoice_id")
+  interval      RecurrenceInterval
+  nextRunAt     DateTime            @map("next_run_at")
+  endsAt        DateTime?           @map("ends_at")
+  isActive      Boolean             @default(true) @map("is_active")
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@map("invoice_recurrences")
+}
+
+model InvoiceSend {
+  id        String   @id @default(uuid())
+  invoiceId String   @map("invoice_id")
+  channel   String // EMAIL | WHATSAPP | SMS
+  sentTo    String   @map("sent_to")
+  sentAt    DateTime @default(now()) @map("sent_at")
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@map("invoice_sends")
+}
+
+// Reconciliation against a synced Google Sheet of received transfers (see sheet-recon module).
+model InvoiceSweep {
+  id                  String   @id @default(uuid())
+  invoiceId           String   @map("invoice_id")
+  sheetRowReference   String?  @map("sheet_row_reference")
+  amount              Decimal  @db.Decimal(14, 2)
+  matchedAt           DateTime @default(now()) @map("matched_at")
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@map("invoice_sweeps")
+}
+
+model PaymentReceipt {
+  id               String          @id @default(uuid())
+  invoiceId        String          @map("invoice_id")
+  invoicePaymentId String?         @map("invoice_payment_id")
+  receiptNumber    String          @map("receipt_number")
+  pdfUrl           String?         @map("pdf_url")
+  createdAt        DateTime        @default(now()) @map("created_at")
+
+  invoice        Invoice         @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoicePayment InvoicePayment? @relation(fields: [invoicePaymentId], references: [id])
+
+  @@map("payment_receipts")
+}
+
+// ─── Stock/expenses + product catalog (COA-tagged manual spend, not vendor-batched) ────────────
+
+model Product {
+  id          String  @id @default(uuid())
+  workspaceId String  @map("workspace_id")
+  name        String
+  unit        String?
+  isActive    Boolean @default(true) @map("is_active")
+
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  stockExpenses StockExpense[]
+
+  @@unique([workspaceId, name])
+  @@map("products")
+}
+
+model StockExpense {
+  id          String   @id @default(uuid())
+  workspaceId String   @map("workspace_id")
+  productId   String?  @map("product_id")
+  description String
+  amount      Decimal  @db.Decimal(14, 2)
+  quantity    Decimal? @db.Decimal(10, 2)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  product   Product?  @relation(fields: [productId], references: [id])
+
+  @@map("stock_expenses")
+}
+
+// ─── Platform billing (Paid in Full billing its own workspaces) ────────────
+
+model BillingPlan {
+  id            String   @id @default(uuid())
+  tier          PlanTier @unique
+  name          String
+  priceMonthly  Decimal  @db.Decimal(14, 2) @map("price_monthly")
+  features      Json
+
+  subscriptions WorkspaceSubscription[]
+
+  @@map("billing_plans")
+}
+
+model WorkspaceSubscription {
+  id             String    @id @default(uuid())
+  workspaceId    String    @unique @map("workspace_id")
+  billingPlanId  String    @map("billing_plan_id")
+  currentPeriodStart DateTime @map("current_period_start")
+  currentPeriodEnd   DateTime @map("current_period_end")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  workspace         Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  billingPlan       BillingPlan              @relation(fields: [billingPlanId], references: [id])
+  payments          BillingPayment[]
+  chargeAttempts    SubscriptionChargeAttempt[]
+  dunningState      SubscriptionDunningState?
+
+  @@map("workspace_subscriptions")
+}
+
+model BillingPayment {
+  id                      String   @id @default(uuid())
+  workspaceSubscriptionId String   @map("workspace_subscription_id")
+  amount                  Decimal  @db.Decimal(14, 2)
+  monnifyReference        String?  @unique @map("monnify_reference")
+  paidAt                  DateTime @default(now()) @map("paid_at")
+
+  workspaceSubscription WorkspaceSubscription @relation(fields: [workspaceSubscriptionId], references: [id], onDelete: Cascade)
+
+  @@map("billing_payments")
+}
+
+model SubscriptionChargeAttempt {
+  id                      String   @id @default(uuid())
+  workspaceSubscriptionId String   @map("workspace_subscription_id")
+  amount                  Decimal  @db.Decimal(14, 2)
+  succeeded                Boolean @default(false)
+  failureReason            String? @map("failure_reason")
+  attemptedAt              DateTime @default(now()) @map("attempted_at")
+
+  workspaceSubscription WorkspaceSubscription @relation(fields: [workspaceSubscriptionId], references: [id], onDelete: Cascade)
+
+  @@map("subscription_charge_attempts")
+}
+
+model SubscriptionDunningState {
+  id                      String    @id @default(uuid())
+  workspaceSubscriptionId String    @unique @map("workspace_subscription_id")
+  consecutiveFailures     Int       @default(0) @map("consecutive_failures")
+  nextRetryAt             DateTime? @map("next_retry_at")
+  suspendedAt             DateTime? @map("suspended_at")
+
+  workspaceSubscription WorkspaceSubscription @relation(fields: [workspaceSubscriptionId], references: [id], onDelete: Cascade)
+
+  @@map("subscription_dunning_state")
+}
+
+// A workspace's own customer on a recurring billing plan (e.g. a serviced-apartment resident on
+// a monthly service charge) — distinct from WorkspaceSubscription, which is the workspace's own
+// SaaS subscription to Paid in Full.
+model CustomerSubscription {
+  id          String             @id @default(uuid())
+  workspaceId String             @map("workspace_id")
+  customerId  String             @map("customer_id")
+  interval    RecurrenceInterval
+  amount      Decimal            @db.Decimal(14, 2)
+  nextRunAt   DateTime           @map("next_run_at")
+  isActive    Boolean            @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("customer_subscriptions")
+}
+
+// ─── Settlement reconciliation ──────────────────────────────────────────────
+
+// Monnify's settlement report for a disbursed Batch — confirms the platform's own settlement
+// account was actually debited for what the batch's payouts claim.
+model SettlementBatch {
+  id                     String   @id @default(uuid())
+  workspaceId            String   @map("workspace_id")
+  batchId                String   @unique @map("batch_id")
+  monnifySettlementRef   String?  @map("monnify_settlement_ref")
+  expectedAmount         Decimal  @db.Decimal(14, 2) @map("expected_amount")
+  settledAmount          Decimal? @db.Decimal(14, 2) @map("settled_amount")
+  settledAt              DateTime? @map("settled_at")
+
+  workspace Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  batch     Batch                 @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  items     SettlementBatchItem[]
+
+  @@map("settlement_batches")
+}
+
+model SettlementBatchItem {
+  id                 String               @id @default(uuid())
+  settlementBatchId  String               @map("settlement_batch_id")
+  batchItemPayoutRef String               @map("batch_item_payout_ref")
+  amount             Decimal              @db.Decimal(14, 2)
+  status             SettlementItemStatus @default(UNMATCHED)
+
+  settlementBatch SettlementBatch @relation(fields: [settlementBatchId], references: [id], onDelete: Cascade)
+
+  @@map("settlement_batch_items")
+}
+
+// ─── Notifications, email, push ─────────────────────────────────────────────
+
+model NotificationPref {
+  id          String  @id @default(uuid())
+  workspaceId String  @map("workspace_id")
+  userId      String  @map("user_id")
+  channel     String // EMAIL | PUSH | WHATSAPP
+  event       String // e.g. QUEUE_ITEM_ADDED, BATCH_APPROVED
+  isEnabled   Boolean @default(true) @map("is_enabled")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId, channel, event])
+  @@map("notification_prefs")
+}
+
+model PushSubscription {
+  id          String       @id @default(uuid())
+  workspaceId String       @map("workspace_id")
+  userId      String       @map("user_id")
+  platform    PushPlatform @default(WEB)
+  endpoint    String       @unique
+  p256dhKey   String       @map("p256dh_key")
+  authKey     String       @map("auth_key")
+  createdAt   DateTime     @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("push_subscriptions")
+}
+
+model EmailSendLog {
+  id        String   @id @default(uuid())
+  toEmail   String   @map("to_email")
+  template  String
+  status    String // SENT | FAILED | BOUNCED
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("email_send_log")
+}
+
+// Per-recipient de-duplication/cooldown state for a given template (e.g. don't re-send a
+// payment reminder within 24h).
+model EmailSendState {
+  id           String   @id @default(uuid())
+  toEmail      String   @map("to_email")
+  template     String
+  lastSentAt   DateTime @map("last_sent_at")
+
+  @@unique([toEmail, template])
+  @@map("email_send_state")
+}
+
+model EmailUnsubscribeToken {
+  id        String   @id @default(uuid())
+  email     String
+  token     String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("email_unsubscribe_tokens")
+}
+
+model SuppressedEmail {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  reason    String // BOUNCE | COMPLAINT | UNSUBSCRIBE
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("suppressed_emails")
+}
+
+// ─── Platform / audit / misc ────────────────────────────────────────────────
+
+model AppConfig {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("app_config")
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  workspaceId String?  @map("workspace_id")
+  userId      String?  @map("user_id")
+  action      String
+  entityType  String   @map("entity_type")
+  entityId    String?  @map("entity_id")
+  metadata    Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User?      @relation(fields: [userId], references: [id])
+
+  @@index([workspaceId, createdAt])
+  @@map("audit_log")
+}
+
+model ClientError {
+  id        String   @id @default(uuid())
+  message   String
+  stack     String?
+  url       String?
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("client_errors")
+}
+
+// Backs runIdempotent() in api/src/common/idempotent.ts.
+model IdempotencyKey {
+  id             String   @id @default(uuid())
+  workspaceId    String   @map("workspace_id")
+  action         String
+  key            String
+  resultSnapshot Json?    @map("result_snapshot")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, action, key])
+  @@map("idempotency_keys")
+}

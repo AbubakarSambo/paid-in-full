@@ -1,0 +1,29 @@
+---
+import Logo from './Logo.astro'
+const appUrl = import.meta.env.PUBLIC_APP_URL ?? 'http://localhost:5173'
+---
+
+<header class="sticky top-0 z-30 border-b border-border bg-background/80 backdrop-blur">
+  <div class="max-w-6xl mx-auto flex items-center justify-between px-5 py-4">
+    <a href="/" class="flex items-center gap-2.5">
+      <Logo size={32} />
+      <span class="font-display text-lg font-bold tracking-tight">Paid in Full</span>
+    </a>
+    <nav class="hidden md:flex items-center gap-7 text-sm text-text-dim">
+      <a href="#features" class="hover:text-foreground transition">Features</a>
+      <a href="#how" class="hover:text-foreground transition">How it works</a>
+      <a href="#pricing" class="hover:text-foreground transition">Pricing</a>
+    </nav>
+    <div class="flex items-center gap-2">
+      <a href={`${appUrl}/login`} class="text-sm px-3 py-2 text-text-dim hover:text-foreground transition">
+        Sign in
+      </a>
+      <a
+        href={`${appUrl}/register`}
+        class="text-sm px-4 py-2 rounded-lg bg-gold text-dark font-semibold hover:brightness-110 transition shadow-sm"
+      >
+        Get started
+      </a>
+    </div>
+  </div>
+</header>

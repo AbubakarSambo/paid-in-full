@@ -1,0 +1,30 @@
+---
+const steps = [
+  { n: '01', title: 'Queue', body: 'Add vendor invoices manually or upload in bulk. Categorise and budget-check at entry.' },
+  { n: '02', title: 'Batch', body: 'Group items by category into a disbursement batch. Auto-named, auto-numbered.' },
+  { n: '03', title: 'Approve', body: 'Approver reviews totals, vendor accounts, and the full line-item breakdown.' },
+  { n: '04', title: 'Disburse', body: 'One click sends the whole batch via Monnify. Status syncs back automatically.' },
+]
+---
+
+<section id="how" class="bg-surface/40 border-y border-border">
+  <div class="max-w-6xl mx-auto px-5 py-20 md:py-28">
+    <div class="max-w-2xl mb-12">
+      <p class="text-xs uppercase tracking-widest text-gold font-semibold mb-3">How it works</p>
+      <h2 class="font-display text-3xl md:text-4xl font-bold tracking-tight">
+        Four steps from invoice to ledger.
+      </h2>
+    </div>
+    <div class="grid md:grid-cols-4 gap-5">
+      {
+        steps.map((s) => (
+          <div class="p-6 rounded-2xl bg-background border border-border relative">
+            <span class="font-mono text-xs text-gold font-semibold">{s.n}</span>
+            <h3 class="font-display font-bold text-xl mt-2 mb-2">{s.title}</h3>
+            <p class="text-text-dim text-sm leading-relaxed">{s.body}</p>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>

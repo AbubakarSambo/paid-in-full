@@ -1,0 +1,67 @@
+---
+const appUrl = import.meta.env.PUBLIC_APP_URL ?? 'http://localhost:5173'
+const tiers = [
+  {
+    name: 'Starter',
+    price: 'Free',
+    body: '1 workspace &middot; 3 users &middot; 50 disbursements/mo',
+    cta: 'Start free',
+    href: `${appUrl}/register`,
+    highlight: false,
+  },
+  {
+    name: 'Growth',
+    price: '₦45,000',
+    sub: '/month',
+    body: 'Unlimited users &middot; Unlimited disbursements &middot; CSV import &middot; Reports',
+    cta: 'Start free trial',
+    href: `${appUrl}/register`,
+    highlight: true,
+  },
+  {
+    name: 'Enterprise',
+    price: 'Custom',
+    body: 'Multi-entity &middot; SSO &middot; Audit exports &middot; Dedicated support',
+    cta: 'Talk to us',
+    href: 'mailto:hello@paidinfull.app',
+    highlight: false,
+  },
+]
+---
+
+<section id="pricing" class="bg-surface/40 border-y border-border">
+  <div class="max-w-6xl mx-auto px-5 py-20 md:py-28">
+    <div class="text-center mb-12">
+      <p class="text-xs uppercase tracking-widest text-gold font-semibold mb-3">Pricing</p>
+      <h2 class="font-display text-3xl md:text-4xl font-bold tracking-tight">Simple, by the workspace.</h2>
+    </div>
+    <div class="grid md:grid-cols-3 gap-5">
+      {
+        tiers.map((t) => (
+          <div
+            class={`p-7 rounded-2xl border ${
+              t.highlight ? 'bg-gold text-dark border-gold shadow-xl md:scale-[1.02]' : 'bg-background border-border'
+            }`}
+          >
+            <div class={`text-xs uppercase tracking-widest font-semibold mb-2 ${t.highlight ? 'text-dark/70' : 'text-text-dim'}`}>
+              {t.name}
+            </div>
+            <div class="flex items-baseline gap-1 mb-4">
+              <span class="font-display text-4xl font-bold">{t.price}</span>
+              {t.sub && <span class={`text-sm ${t.highlight ? 'text-dark/70' : 'text-text-dim'}`}>{t.sub}</span>}
+            </div>
+            <p class={`text-sm leading-relaxed mb-6 ${t.highlight ? 'text-dark/80' : 'text-text-dim'}`} set:html={t.body} />
+            <a
+              href={t.href}
+              class={`block text-center px-4 py-2.5 rounded-lg font-medium text-sm transition ${
+                t.highlight ? 'bg-dark text-gold hover:brightness-125' : 'bg-gold text-dark hover:brightness-110'
+              }`}
+            >
+              {t.cta}
+            </a>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>

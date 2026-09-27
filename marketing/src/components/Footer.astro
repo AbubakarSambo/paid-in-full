@@ -1,0 +1,19 @@
+---
+import Logo from './Logo.astro'
+const appUrl = import.meta.env.PUBLIC_APP_URL ?? 'http://localhost:5173'
+const year = new Date().getFullYear()
+---
+
+<footer class="border-t border-border">
+  <div class="max-w-6xl mx-auto px-5 py-10 flex flex-wrap items-center justify-between gap-4 text-sm text-text-dim">
+    <div class="flex items-center gap-2.5">
+      <Logo size={24} />
+      <span class="font-display font-bold text-foreground">Paid in Full</span>
+      <span>&middot; &copy; {year}</span>
+    </div>
+    <div class="flex items-center gap-5">
+      <a href={`${appUrl}/login`} class="hover:text-foreground transition">Sign in</a>
+      <a href="mailto:hello@paidinfull.app" class="hover:text-foreground transition">Contact</a>
+    </div>
+  </div>
+</footer>

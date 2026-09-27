@@ -1,0 +1,16 @@
+{
+  "name": "paid-in-full-monnify-relay",
+  "version": "1.0.0",
+  "description": "Static-IP relay forwarding Monnify disbursement calls through a Fixie proxy.",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "https-proxy-agent": "^7.0.5"
+  }
+}

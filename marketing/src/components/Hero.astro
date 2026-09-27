@@ -1,0 +1,43 @@
+---
+import HeroVisual from './HeroVisual.astro'
+const appUrl = import.meta.env.PUBLIC_APP_URL ?? 'http://localhost:5173'
+---
+
+<section class="relative overflow-hidden">
+  <div class="max-w-6xl mx-auto px-5 pt-16 pb-20 md:pt-24 md:pb-28 grid md:grid-cols-2 gap-12 items-center">
+    <div>
+      <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-surface2 border border-border text-[11px] uppercase tracking-widest text-text-dim mb-6">
+        <span class="size-1.5 rounded-full bg-gold animate-pulse"></span>
+        Now live with Monnify
+      </div>
+      <h1 class="font-display text-4xl md:text-6xl font-bold leading-[1.05] tracking-tight">
+        One Approval. Every Vendor.<br />
+        <span class="text-gold">Paid In Full.</span>
+      </h1>
+      <p class="mt-6 text-lg text-text-dim max-w-lg leading-relaxed">
+        No more WhatsApp-ing, copy-pasting account numbers and losing half your Tuesday to supplier payments. Request, approve, disburse — all in one place.
+      </p>
+      <div class="mt-8 flex flex-wrap gap-3">
+        <a
+          href={`${appUrl}/register`}
+          class="inline-flex items-center gap-2 px-5 py-3 rounded-lg bg-gold text-dark font-semibold hover:brightness-110 transition shadow-sm"
+        >
+          Start free
+          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M5 12h14M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </a>
+        <a
+          href="#how"
+          class="inline-flex items-center gap-2 px-5 py-3 rounded-lg bg-surface2 border border-border text-foreground font-medium hover:bg-surface3 transition"
+        >
+          See how it works
+        </a>
+      </div>
+      <p class="mt-5 text-xs text-text-dim">No card required &middot; Built for Nigerian operators &middot; Powered by Monnify</p>
+    </div>
+    <div class="relative">
+      <HeroVisual />
+    </div>
+  </div>
+</section>

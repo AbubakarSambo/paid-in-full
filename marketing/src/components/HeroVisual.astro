@@ -1,0 +1,243 @@
+---
+// CSS-only reimplementation of gold-batch-pro's HeroAnimation.tsx: a mock
+// "batch" window that cycles through Queued -> Approving -> Disbursed using
+// a single CSS animation timeline (no JS/React), driven by animation-delay
+// offsets on each phase's opacity/visibility.
+const vendors = [
+  { name: 'Adebayo Logistics', bank: 'GTBank', acct: '0123 •• 4521', amount: '₦485,000', tag: 'Logistics' },
+  { name: 'Lagos Power Supply', bank: 'Access', acct: '0789 •• 3320', amount: '₦1,240,000', tag: 'Utilities' },
+  { name: 'Chibuzor Foods Ltd', bank: 'Zenith', acct: '2045 •• 7781', amount: '₦672,500', tag: 'Inventory' },
+  { name: 'Okeke Maintenance', bank: 'UBA', acct: '3310 •• 0902', amount: '₦210,000', tag: 'Maintenance' },
+]
+const total = '₦2,607,500'
+---
+
+<div class="relative aspect-[4/5] md:aspect-[5/6] w-full">
+  <div class="absolute -inset-10 bg-gold/15 rounded-[3rem] blur-3xl pointer-events-none"></div>
+
+  <div class="hero-window relative h-full rounded-3xl border border-border bg-surface shadow-2xl overflow-hidden flex flex-col">
+    <div class="flex items-center gap-2 px-4 py-3 border-b border-border bg-surface2/60">
+      <span class="size-2.5 rounded-full bg-red/70"></span>
+      <span class="size-2.5 rounded-full bg-orange/70"></span>
+      <span class="size-2.5 rounded-full bg-green/70"></span>
+      <div class="flex-1 text-center text-[11px] text-text-dim font-medium tracking-wide">
+        paidinfull.app — Batch #2406-018
+      </div>
+    </div>
+
+    <div class="flex items-center gap-2 px-5 pt-4 text-[10px] uppercase tracking-widest">
+      <span class="phase-pill phase-pill--queue px-2.5 py-1 rounded-full border">Queued</span>
+      <span class="phase-pill phase-pill--approve px-2.5 py-1 rounded-full border">Approving</span>
+      <span class="phase-pill phase-pill--paid px-2.5 py-1 rounded-full border">Disbursed</span>
+    </div>
+
+    <div class="relative flex-1 px-4 py-4">
+      <!-- Queue phase -->
+      <div class="phase-panel phase-panel--queue absolute inset-0 px-4 py-4 space-y-2">
+        {
+          vendors.map((v, i) => (
+            <div class="vendor-row flex items-center gap-3 p-2.5 rounded-xl bg-surface2/70 border border-border" style={`--i:${i}`}>
+              <div class="size-8 rounded-lg bg-gold/15 grid place-content-center text-gold text-[10px] font-bold font-display shrink-0">
+                {v.name.split(' ').map((s) => s[0]).slice(0, 2).join('')}
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="text-[12px] font-semibold text-foreground truncate">{v.name}</div>
+                <div class="text-[10px] text-text-dim truncate">{v.bank} · {v.acct}</div>
+              </div>
+              <div class="text-right shrink-0">
+                <div class="font-mono text-[12px] font-bold text-foreground tabular-nums">{v.amount}</div>
+                <div class="text-[9px] text-text-dim uppercase tracking-wider">{v.tag}</div>
+              </div>
+            </div>
+          ))
+        }
+      </div>
+
+      <!-- Approve phase -->
+      <div class="phase-panel phase-panel--approve absolute inset-0 flex flex-col items-center justify-center gap-4">
+        <div class="relative">
+          <div class="approve-pulse absolute inset-0 rounded-full bg-gold/30"></div>
+          <div class="relative size-16 rounded-full bg-gold grid place-content-center shadow-lg">
+            <svg class="size-8 text-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+              <path d="M5 13l4 4L19 7" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </div>
+        </div>
+        <div class="text-center">
+          <div class="text-[11px] uppercase tracking-widest text-text-dim mb-1">Approved by Finance</div>
+          <div class="font-display font-bold text-lg text-foreground">4 vendors · {total}</div>
+        </div>
+      </div>
+
+      <!-- Paid phase -->
+      <div class="phase-panel phase-panel--paid absolute inset-0 px-4 py-4 space-y-2">
+        {
+          vendors.map((v, i) => (
+            <div class="vendor-row flex items-center gap-3 p-2.5 rounded-xl bg-green/5 border border-green/20" style={`--i:${i}`}>
+              <div class="size-8 rounded-lg bg-green/15 grid place-content-center text-green shrink-0">
+                <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                  <path d="M5 13l4 4L19 7" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="text-[12px] font-semibold text-foreground truncate">{v.name}</div>
+                <div class="text-[10px] text-green truncate">Sent · ref MNF{178432 + i}</div>
+              </div>
+              <div class="font-mono text-[12px] font-bold text-foreground tabular-nums shrink-0">{v.amount}</div>
+            </div>
+          ))
+        }
+      </div>
+    </div>
+
+    <div class="px-5 py-3.5 border-t border-border bg-surface2/40 flex items-center justify-between">
+      <div>
+        <div class="text-[10px] uppercase tracking-widest text-text-dim">Batch total</div>
+        <div class="font-mono text-base font-bold text-foreground tabular-nums">{total}</div>
+      </div>
+      <div class="cta-chip inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-semibold">
+        <span class="cta-chip__queue">Send for approval</span>
+        <span class="cta-chip__approve">Approving…</span>
+        <span class="cta-chip__paid">Disbursed via Monnify</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  /* One shared 8s timeline: 0-40% queued, 40-55% approving, 55-100% disbursed, loops. */
+  .phase-pill {
+    animation: pillCycle 8s ease-in-out infinite;
+  }
+  .phase-pill--queue {
+    background: color-mix(in srgb, var(--gold) 15%, transparent);
+    border-color: color-mix(in srgb, var(--gold) 40%, transparent);
+    color: var(--gold);
+  }
+  .phase-pill--approve,
+  .phase-pill--paid {
+    background: var(--surface2);
+    border-color: var(--border);
+    color: var(--text-dim);
+    animation-delay: -8s;
+  }
+
+  @keyframes pillCycle {
+    0%, 38% { opacity: 1; }
+    40%, 100% { opacity: 0.45; }
+  }
+
+  .phase-panel {
+    opacity: 0;
+    transition: opacity 0.4s ease;
+    pointer-events: none;
+  }
+  .phase-panel--queue { animation: showQueue 8s ease-in-out infinite; }
+  .phase-panel--approve { animation: showApprove 8s ease-in-out infinite; }
+  .phase-panel--paid { animation: showPaid 8s ease-in-out infinite; }
+
+  @keyframes showQueue {
+    0%, 38% { opacity: 1; }
+    40%, 100% { opacity: 0; }
+  }
+  @keyframes showApprove {
+    0%, 38% { opacity: 0; }
+    40%, 53% { opacity: 1; }
+    55%, 100% { opacity: 0; }
+  }
+  @keyframes showPaid {
+    0%, 53% { opacity: 0; }
+    55%, 98% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+
+  .vendor-row {
+    animation: rowIn 8s ease-in-out infinite;
+    animation-delay: calc(var(--i, 0) * 0.15s);
+  }
+  @keyframes rowIn {
+    0% { opacity: 0; transform: translateX(-8px); }
+    5%, 100% { opacity: 1; transform: translateX(0); }
+  }
+
+  .approve-pulse {
+    animation: approvePulse 1.4s ease-out infinite;
+  }
+  @keyframes approvePulse {
+    0% { transform: scale(1); opacity: 0.6; }
+    100% { transform: scale(1.6); opacity: 0; }
+  }
+
+  .cta-chip {
+    position: relative;
+    min-width: 11rem;
+    justify-content: flex-end;
+  }
+  .cta-chip span {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.375rem;
+    white-space: nowrap;
+    opacity: 0;
+  }
+  .cta-chip__queue {
+    color: var(--dark);
+  }
+  .cta-chip::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 0.5rem;
+    background: var(--gold);
+    animation: chipBgQueue 8s ease-in-out infinite;
+  }
+  @keyframes chipBgQueue {
+    0%, 38% { background: var(--gold); border: none; }
+    40%, 53% {
+      background: color-mix(in srgb, var(--gold) 15%, transparent);
+      border: 1px solid color-mix(in srgb, var(--gold) 30%, transparent);
+    }
+    55%, 100% {
+      background: color-mix(in srgb, var(--green) 15%, transparent);
+      border: 1px solid color-mix(in srgb, var(--green) 30%, transparent);
+    }
+  }
+  .cta-chip__queue { animation: chipTextQueue 8s ease-in-out infinite; }
+  .cta-chip__approve { color: var(--gold); animation: chipTextApprove 8s ease-in-out infinite; }
+  .cta-chip__paid { color: var(--green); animation: chipTextPaid 8s ease-in-out infinite; }
+
+  @keyframes chipTextQueue {
+    0%, 38% { opacity: 1; }
+    40%, 100% { opacity: 0; }
+  }
+  @keyframes chipTextApprove {
+    0%, 38% { opacity: 0; }
+    40%, 53% { opacity: 1; }
+    55%, 100% { opacity: 0; }
+  }
+  @keyframes chipTextPaid {
+    0%, 53% { opacity: 0; }
+    55%, 98% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .phase-pill,
+    .phase-panel,
+    .vendor-row,
+    .approve-pulse,
+    .cta-chip::before,
+    .cta-chip span {
+      animation: none !important;
+    }
+    .phase-panel--queue,
+    .cta-chip__queue { opacity: 1 !important; }
+    .phase-panel--approve,
+    .phase-panel--paid,
+    .cta-chip__approve,
+    .cta-chip__paid { opacity: 0 !important; }
+  }
+</style>
