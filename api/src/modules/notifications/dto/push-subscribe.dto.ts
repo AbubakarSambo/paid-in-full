@@ -20,3 +20,10 @@ export class PushSubscribeDto {
   @IsEnum(PushPlatform)
   platform?: PushPlatform;
 }
+
+export class PushUnsubscribeDto {
+  /** Omit to remove every push subscription of mine in this workspace. */
+  @IsOptional()
+  @IsString()
+  endpoint?: string;
+}

@@ -27,7 +27,7 @@ export class ErrorBoundary extends Component<Props, State> {
 
   handleReload = () => {
     this.setState({ hasError: false, error: undefined })
-    window.location.href = '/dashboard'
+    window.location.href = '/app'
   }
 
   render() {
@@ -42,7 +42,7 @@ export class ErrorBoundary extends Component<Props, State> {
             onClick={this.handleReload}
             className="rounded-xl bg-gold px-6 py-3 text-sm font-semibold text-primary-foreground"
           >
-            Back to dashboard
+            Back to the app
           </button>
         </div>
       )

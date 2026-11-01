@@ -7,11 +7,11 @@ export class AppConfigAdminService {
   constructor(private readonly prisma: PrismaService) {}
 
   async list() {
-    return this.prisma.appConfig.findMany({ orderBy: { key: 'asc' } });
+    return this.prisma.platformConfig.findMany({ orderBy: { key: 'asc' } });
   }
 
   async upsert(dto: UpsertAppConfigDto) {
-    return this.prisma.appConfig.upsert({
+    return this.prisma.platformConfig.upsert({
       where: { key: dto.key },
       create: { key: dto.key, value: dto.value ?? null },
       update: { value: dto.value ?? null },

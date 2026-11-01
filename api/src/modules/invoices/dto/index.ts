@@ -5,6 +5,6 @@ export * from './invoice-filter.dto';
 export * from './record-payment.dto';
 export * from './send-invoice.dto';
 export * from './create-recurrence.dto';
-export * from './create-sweep.dto';
 export * from './from-template.dto';
 export * from './invoice-template.dto';
+export * from './invoice-actions.dto';

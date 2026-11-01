@@ -1,10 +1,13 @@
 import { Module } from '@nestjs/common';
 import { SettlementController } from './settlement.controller';
 import { SettlementService } from './settlement.service';
+import { StatementReconService } from './statement-recon.service';
+import { WalletModule } from '../wallet/wallet.module';
 
 @Module({
+  imports: [WalletModule],
   controllers: [SettlementController],
-  providers: [SettlementService],
-  exports: [SettlementService],
+  providers: [SettlementService, StatementReconService],
+  exports: [SettlementService, StatementReconService],
 })
 export class SettlementModule {}

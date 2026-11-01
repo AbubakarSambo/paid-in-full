@@ -26,11 +26,10 @@ export interface Workspace {
 export interface Vendor {
   id: string
   name: string
-  accountNumber?: string
+  bankAccountNumber?: string
   accountName?: string
   bankCode?: string
   bankName?: string
-  category?: string
   createdAt?: string
   [key: string]: unknown
 }
@@ -60,7 +59,7 @@ export interface QueueItem {
 
 export interface Batch {
   id: string
-  status: 'DRAFT' | 'APPROVED' | 'DISBURSING' | 'DISBURSED' | 'FAILED' | string
+  status: 'DRAFT' | 'PENDING_APPROVAL' | 'APPROVED' | 'DISBURSING' | 'DISBURSED' | 'PARTIALLY_FAILED' | 'FAILED' | string
   totalAmount?: number
   itemCount?: number
   createdAt?: string
@@ -70,9 +69,11 @@ export interface Batch {
 
 export interface BatchItem {
   id: string
-  vendorName?: string
-  amount: number
-  payoutStatus?: string
+  vendor?: { id: string; name: string }
+  grossAmount: number
+  whtAmount: number
+  netAmount: number
+  payout?: { status: string } | null
   [key: string]: unknown
 }
 

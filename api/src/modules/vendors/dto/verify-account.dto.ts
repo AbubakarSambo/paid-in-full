@@ -1,9 +1,9 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString } from 'class-validator';
+import { IsString, Matches } from 'class-validator';
 
 export class VerifyAccountDto {
   @ApiProperty()
-  @IsString()
+  @Matches(/^\d{10}$/, { message: 'Account number must be 10 digits' })
   accountNumber: string;
 
   @ApiProperty()

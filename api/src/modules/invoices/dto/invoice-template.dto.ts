@@ -3,8 +3,10 @@ import {
   ArrayMinSize,
   IsArray,
   IsNotEmpty,
+  IsObject,
   IsOptional,
   IsString,
+  Length,
   MaxLength,
   ValidateNested,
 } from 'class-validator';
@@ -22,6 +24,22 @@ export class CreateInvoiceTemplateDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  terms?: string;
+
+  @ApiPropertyOptional({ example: 'NGN' })
+  @IsOptional()
+  @IsString()
+  @Length(3, 3)
+  currency?: string;
+
+  @ApiPropertyOptional({ description: 'Editor settings (discount, taxInclusive, late fee, early pay, dueDays…)' })
+  @IsOptional()
+  @IsObject()
+  settings?: Record<string, unknown>;
 
   @ApiProperty({ type: [InvoiceItemDto] })
   @IsArray()

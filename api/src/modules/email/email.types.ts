@@ -10,12 +10,30 @@ export type EmailTemplateName =
   | 'PAYMENT_MADE'
   | 'SUBSCRIPTION_PAYMENT_FAILED'
   | 'SUBSCRIPTION_PAYMENT_RECEIPT'
-  | 'SUBSCRIPTION_SUSPENDED';
+  | 'SUBSCRIPTION_SUSPENDED'
+  | 'EMAIL_VERIFY'
+  | 'NOTIFICATION';
 
 export interface InviteEmailData {
   token: string;
   workspaceName: string;
   firstName?: string;
+}
+
+export interface EmailVerifyEmailData {
+  token: string;
+  firstName?: string;
+}
+
+/** Generic alert used by NotificationsService.notify() (queue_added, batch_*, disbursement_result, test). */
+export interface NotificationEmailData {
+  title: string;
+  body: string;
+  recipientName?: string;
+  workspaceName?: string;
+  /** Path inside the app (e.g. "/app?tab=queue") or absolute URL. */
+  url?: string;
+  ctaText?: string;
 }
 
 export interface MagicLinkEmailData {
@@ -80,4 +98,6 @@ export type EmailTemplateData =
   | PaymentMadeEmailData
   | SubscriptionPaymentFailedEmailData
   | SubscriptionPaymentReceiptEmailData
-  | SubscriptionSuspendedEmailData;
+  | SubscriptionSuspendedEmailData
+  | EmailVerifyEmailData
+  | NotificationEmailData;

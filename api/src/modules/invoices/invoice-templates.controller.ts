@@ -11,10 +11,11 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { InvoiceTemplatesService } from './invoice-templates.service';
 import { CreateInvoiceTemplateDto, UpdateInvoiceTemplateDto } from './dto';
-import { CurrentUser, CurrentUserData } from '../../common';
+import { CurrentUser, CurrentUserData, Capability, RequireCapability } from '../../common';
 
 @ApiTags('Invoice Templates')
 @ApiBearerAuth()
+@RequireCapability(Capability.INVOICE)
 @Controller('invoice-templates')
 export class InvoiceTemplatesController {
   constructor(private readonly templatesService: InvoiceTemplatesService) {}

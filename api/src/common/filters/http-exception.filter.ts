@@ -31,7 +31,11 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       } else if (typeof exceptionResponse === 'object') {
         const responseObj = exceptionResponse as Record<string, any>;
         message = responseObj.message || message;
-        errors = responseObj.errors || null;
+        // Keep any structured fields a handler attached (e.g. `code`, `requiresConfirmation`,
+        // `projections`) so the client can act on them; they are surfaced under `errors`.
+        const { message: _m, errors: nested, statusCode: _s, error: _e, ...extras } = responseObj;
+        errors = nested || Object.keys(extras).length ? { ...extras, ...(nested && typeof nested === 'object' ? nested : {}) } : null;
+        if (Array.isArray(nested)) errors = nested;
       }
     } else if (exception instanceof Error) {
       message = exception.message;

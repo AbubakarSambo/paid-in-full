@@ -1,12 +1,13 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { WalletService } from './wallet.service';
 import { WalletController } from './wallet.controller';
+import { PayoutLedgerService } from './payout-ledger.service';
 import { MonnifyModule } from '../monnify/monnify.module';
 
 @Module({
   imports: [forwardRef(() => MonnifyModule)],
   controllers: [WalletController],
-  providers: [WalletService],
-  exports: [WalletService],
+  providers: [WalletService, PayoutLedgerService],
+  exports: [WalletService, PayoutLedgerService],
 })
 export class WalletModule {}

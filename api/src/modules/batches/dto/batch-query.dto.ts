@@ -1,11 +1,17 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { BatchStatus } from '@prisma/client';
-import { IsEnum, IsOptional } from 'class-validator';
-import { PaginationDto } from '../../../common';
+import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 
-export class BatchQueryDto extends PaginationDto {
-  @ApiPropertyOptional({ enum: BatchStatus })
+export const BATCH_FILTERS = ['all', 'ready', 'paid', 'PENDING', 'PROCESSING', 'PARTIAL', 'SUCCESS', 'CANCELLED'] as const;
+
+export class BatchQueryDto {
+  @ApiPropertyOptional({ description: 'Text filter: batch ref, vendor, category or status' })
   @IsOptional()
-  @IsEnum(BatchStatus)
-  status?: BatchStatus;
+  @IsString()
+  @MaxLength(100)
+  search?: string;
+
+  @ApiPropertyOptional({ enum: BATCH_FILTERS, default: 'all' })
+  @IsOptional()
+  @IsIn(BATCH_FILTERS as unknown as string[])
+  status?: (typeof BATCH_FILTERS)[number];
 }

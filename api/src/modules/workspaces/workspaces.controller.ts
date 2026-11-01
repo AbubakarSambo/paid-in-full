@@ -1,36 +1,51 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags } from '@nestjs/swagger';
 import { WorkspacesService } from './workspaces.service';
+import { MembersService } from '../users/members.service';
 import { UpdateWorkspaceDto, InviteMemberDto } from './dto';
-import { CurrentUser, CurrentUserData } from '../../common/decorators/current-user.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { Role } from '../../common/decorators/roles.decorator';
+import { UploadedImageFile } from '../uploads/image-upload';
+import { Capability, CurrentUser, CurrentUserData, RequireCapability } from '../../common';
 
 @ApiTags('Workspaces')
 @Controller('workspace')
 export class WorkspacesController {
-  constructor(private workspacesService: WorkspacesService) {}
+  constructor(
+    private workspacesService: WorkspacesService,
+    private members: MembersService,
+  ) {}
 
   @Get()
+  @RequireCapability(Capability.VIEW)
   findOne(@CurrentUser() user: CurrentUserData) {
     return this.workspacesService.findOne(user.workspaceId);
   }
 
   @Patch()
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @RequireCapability(Capability.ADMIN)
   update(@CurrentUser() user: CurrentUserData, @Body() dto: UpdateWorkspaceDto) {
-    return this.workspacesService.update(user.workspaceId, dto);
+    return this.workspacesService.update(user.workspaceId, user, dto);
   }
 
+  /** multipart/form-data, field "file", image ≤ 2 MB. */
+  @Post('logo')
+  @RequireCapability(Capability.ADMIN)
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
+  uploadLogo(@CurrentUser() user: CurrentUserData, @UploadedFile() file: UploadedImageFile) {
+    return this.workspacesService.uploadLogo(user.workspaceId, user, file);
+  }
+
+  /** Legacy alias of POST /users/invite. */
   @Post('members')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @RequireCapability(Capability.ADMIN)
   inviteMember(@CurrentUser() user: CurrentUserData, @Body() dto: InviteMemberDto) {
-    return this.workspacesService.inviteMember(user.workspaceId, dto);
+    return this.members.invite(user.workspaceId, user, { name: dto.name ?? '', email: dto.email, role: dto.role });
   }
 
+  /** Legacy alias of DELETE /users/:userId. */
   @Delete('members/:userId')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @RequireCapability(Capability.ADMIN)
   removeMember(@CurrentUser() user: CurrentUserData, @Param('userId') userId: string) {
-    return this.workspacesService.removeMember(user.workspaceId, userId);
+    return this.members.remove(user.workspaceId, user, userId);
   }
 }

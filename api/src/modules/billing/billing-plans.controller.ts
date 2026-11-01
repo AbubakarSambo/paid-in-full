@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/commo
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { BillingPlansService } from './billing-plans.service';
 import { CreateBillingPlanDto, UpdateBillingPlanDto } from './dto';
-import { Public, Roles, Role } from '../../common';
+import { Public, Capability, RequireCapability } from '../../common';
 
 @ApiTags('Billing')
 @Controller('billing/plans')
@@ -24,7 +24,7 @@ export class BillingPlansController {
   }
 
   @ApiBearerAuth()
-  @Roles(Role.SUPER_ADMIN, Role.ADMIN)
+  @RequireCapability(Capability.SUPER_ADMIN)
   @Post()
   @ApiOperation({ summary: 'Create a billing plan (admin only)' })
   create(@Body() dto: CreateBillingPlanDto) {
@@ -32,7 +32,7 @@ export class BillingPlansController {
   }
 
   @ApiBearerAuth()
-  @Roles(Role.SUPER_ADMIN, Role.ADMIN)
+  @RequireCapability(Capability.SUPER_ADMIN)
   @Patch(':id')
   @ApiOperation({ summary: 'Update a billing plan (admin only)' })
   update(@Param('id') id: string, @Body() dto: UpdateBillingPlanDto) {
@@ -40,7 +40,7 @@ export class BillingPlansController {
   }
 
   @ApiBearerAuth()
-  @Roles(Role.SUPER_ADMIN, Role.ADMIN)
+  @RequireCapability(Capability.SUPER_ADMIN)
   @Delete(':id')
   @ApiOperation({ summary: 'Delete a billing plan (admin only)' })
   remove(@Param('id') id: string) {

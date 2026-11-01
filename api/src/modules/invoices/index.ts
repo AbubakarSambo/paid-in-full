@@ -5,4 +5,8 @@ export * from './invoice-pdf.service';
 export * from './invoice-templates.service';
 export * from './invoice-templates.controller';
 export * from './invoices.cron';
+export * from './invoice-collections.service';
+export * from './invoice-config.service';
+export * from './invoice-monnify.client';
+export * from './collection-hook';
 export * from './dto';

@@ -1,8 +1,8 @@
-import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseBoolPipe, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { DepartmentsService } from './departments.service';
 import { CreateDepartmentDto, UpdateDepartmentDto } from './dto';
-import { CurrentUser, Roles, Role } from '../../common';
+import { CurrentUser, Capability, RequireCapability } from '../../common';
 
 @ApiTags('Departments')
 @ApiBearerAuth()
@@ -13,12 +13,21 @@ export class DepartmentsController {
   @Get()
   @ApiOperation({ summary: 'List departments for the current workspace' })
   @ApiResponse({ status: 200, description: 'List of departments' })
-  async findAll(@CurrentUser('workspaceId') workspaceId: string) {
-    return this.departmentsService.findAll(workspaceId);
+  async findAll(
+    @CurrentUser('workspaceId') workspaceId: string,
+    @Query('activeOnly', new ParseBoolPipe({ optional: true })) activeOnly?: boolean,
+  ) {
+    return this.departmentsService.findAll(workspaceId, { activeOnly });
+  }
+
+  @Get('suggestions')
+  @ApiOperation({ summary: 'Department suggestions for the free-text field (workspace first, then common names)' })
+  async suggestions(@CurrentUser('workspaceId') workspaceId: string, @Query('q') q?: string) {
+    return this.departmentsService.suggestions(workspaceId, q);
   }
 
   @Post()
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @RequireCapability(Capability.ADMIN)
   @ApiOperation({ summary: 'Create a department' })
   @ApiResponse({ status: 201, description: 'Department created' })
   async create(
@@ -29,7 +38,7 @@ export class DepartmentsController {
   }
 
   @Patch(':id')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @RequireCapability(Capability.ADMIN)
   @ApiOperation({ summary: 'Update a department' })
   @ApiResponse({ status: 200, description: 'Department updated' })
   @ApiResponse({ status: 404, description: 'Department not found' })
@@ -42,7 +51,7 @@ export class DepartmentsController {
   }
 
   @Delete(':id')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @RequireCapability(Capability.ADMIN)
   @ApiOperation({ summary: 'Deactivate a department' })
   @ApiResponse({ status: 200, description: 'Department deactivated' })
   @ApiResponse({ status: 404, description: 'Department not found' })

@@ -1,20 +1,8 @@
-import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { ApiPropertyOptional, PartialType } from '@nestjs/swagger';
+import { IsBoolean, IsOptional } from 'class-validator';
+import { CreateLocationDto } from './create-location.dto';
 
-export class UpdateLocationDto {
-  @ApiPropertyOptional({ example: 'Ikeja Property' })
-  @IsOptional()
-  @IsString()
-  @MinLength(1)
-  @MaxLength(255)
-  name?: string;
-
-  @ApiPropertyOptional({ example: '12 Allen Avenue, Ikeja, Lagos' })
-  @IsOptional()
-  @IsString()
-  @MaxLength(500)
-  address?: string;
-
+export class UpdateLocationDto extends PartialType(CreateLocationDto) {
   @ApiPropertyOptional({ example: true })
   @IsOptional()
   @IsBoolean()

@@ -81,12 +81,10 @@ export class SettlementService {
     const classified = await Promise.all(
       created.map(async (row) => {
         const payout = await this.prisma.batchItemPayout.findUnique({
-          where: { monnifyReference: row.batchItemPayoutRef },
-          include: { batchItem: true },
+          where: { reference: row.batchItemPayoutRef },
         });
 
-        const isMatched =
-          !!payout && Math.abs(Number(payout.batchItem.netAmount) - Number(row.amount)) < AMOUNT_EPSILON;
+        const isMatched = !!payout && Math.abs(Number(payout.amount) - Number(row.amount)) < AMOUNT_EPSILON;
 
         return this.prisma.settlementBatchItem.update({
           where: { id: row.id },

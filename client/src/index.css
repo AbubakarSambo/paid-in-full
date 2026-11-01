@@ -106,3 +106,13 @@
   ::-webkit-scrollbar-thumb { background: var(--surface3); border-radius: 8px; border: 2px solid var(--background); }
   ::-webkit-scrollbar-thumb:hover { background: var(--border); }
 }
+
+/* Default "turquoise" skin (spec §2/§12). The classic skin keeps the gold --gold above.
+   Applied as html.skin-turquoise by components/layout/shellStore.applySkin(). */
+:root.skin-turquoise {
+  --gold: #0E9AA0;
+}
+:root.skin-turquoise.dark,
+.skin-turquoise .dark {
+  --gold: #2DD4BF;
+}

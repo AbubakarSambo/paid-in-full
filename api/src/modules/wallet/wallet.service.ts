@@ -1,202 +1,476 @@
-import { BadRequestException, Inject, Injectable, forwardRef } from '@nestjs/common';
-import { Prisma, WalletTransactionType } from '@prisma/client';
+import { BadRequestException, Inject, Injectable, Logger, NotFoundException, forwardRef } from '@nestjs/common';
+import { LedgerDirection, LedgerStatus, Prisma, TopupSource, WalletTransactionType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { paginate, runIdempotent } from '../../common';
+import { AuditLogService, AuditActor } from '../platform/audit-log.service';
+import { AUDIT_ACTIONS, paginate, PaginationDto, runIdempotent } from '../../common';
 import { MonnifyService } from '../monnify/monnify.service';
-import { TopUpDto, WalletLedgerQueryDto } from './dto';
+import { LinkReservedAccountDto, ProvisionReservedAccountDto, RenameReservedAccountDto, TopUpDto, WalletLedgerQueryDto } from './dto';
+import { lineSafety, outstandingOf, round2, toNum } from './payout-math';
 
-function toNumber(val: Prisma.Decimal | number): number {
-  return typeof val === 'number' ? val : Number(val);
+type Db = Prisma.TransactionClient | PrismaService;
+
+export interface WalletBalance {
+  workspaceId: string;
+  /** Spec §8: confirmed credits − (completed + in-flight debits). */
+  balance: number;
+  /** What a disbursement can use right now (= balance, never below 0). */
+  readyToSend: number;
+  /** Credits seen but not yet confirmed. */
+  clearing: number;
+  confirmedCredits: number;
+  completedDebits: number;
+  inFlightDebits: number;
 }
 
-function round2(val: number): number {
-  return Math.round(val * 100) / 100;
+export interface RecordTopupParams {
+  reference: string;
+  amount: number;
+  payerName?: string | null;
+  payerBank?: string | null;
+  payerAccountNumber?: string | null;
+  paidAt?: Date | null;
+  source: TopupSource;
 }
 
-interface ApplyMovementParams {
-  signedDelta: number;
-  type: WalletTransactionType;
-  batchId?: string;
-  reference?: string;
-  notes?: string;
+/** Postgres advisory lock that serialises every wallet mutation of one workspace. */
+export async function lockWallet(tx: Prisma.TransactionClient, workspaceId: string) {
+  await tx.$queryRaw`SELECT 1 AS ok FROM pg_advisory_xact_lock(hashtext(${`wallet:${workspaceId}`}))`;
 }
 
 @Injectable()
 export class WalletService {
+  private readonly logger = new Logger(WalletService.name);
+
   constructor(
     private readonly prisma: PrismaService,
+    private readonly audit: AuditLogService,
     @Inject(forwardRef(() => MonnifyService))
     private readonly monnifyService: MonnifyService,
   ) {}
 
-  /**
-   * Workspace balance is the running sum of every WalletLedgerEntry row — recomputed on read
-   * rather than cached, so it can never drift from the ledger (see module docstring in the task
-   * brief: no cached-balance column on Workspace).
-   */
-  async getBalance(workspaceId: string): Promise<{ workspaceId: string; balance: number }> {
-    const result = await this.prisma.walletLedgerEntry.aggregate({
+  // ─── Balance ──────────────────────────────────────────────────────────────
+
+  async computeBalance(db: Db, workspaceId: string): Promise<WalletBalance> {
+    const groups = await db.walletLedgerEntry.groupBy({
+      by: ['direction', 'status'],
       where: { workspaceId },
       _sum: { amount: true },
     });
-    return { workspaceId, balance: round2(toNumber(result._sum.amount ?? 0)) };
+    const sum = (direction: LedgerDirection, status: LedgerStatus) =>
+      Math.abs(toNum(groups.find((g) => g.direction === direction && g.status === status)?._sum.amount));
+    const confirmedCredits = round2(sum('IN', 'COMPLETED'));
+    const clearing = round2(sum('IN', 'PENDING'));
+    const completedDebits = round2(sum('OUT', 'COMPLETED'));
+    const inFlightDebits = round2(sum('OUT', 'PENDING'));
+    const balance = round2(confirmedCredits - completedDebits - inFlightDebits);
+    return {
+      workspaceId,
+      balance,
+      readyToSend: Math.max(0, balance),
+      clearing,
+      confirmedCredits,
+      completedDebits,
+      inFlightDebits,
+    };
   }
 
-  private async getBalanceInTx(tx: Prisma.TransactionClient, workspaceId: string): Promise<number> {
-    const result = await tx.walletLedgerEntry.aggregate({
-      where: { workspaceId },
-      _sum: { amount: true },
+  getBalance(workspaceId: string) {
+    return this.computeBalance(this.prisma, workspaceId);
+  }
+
+  /** Wallet Health card + header pill (spec §5.10.15). */
+  async getSummary(workspaceId: string) {
+    const [balance, workspace, inflows] = await Promise.all([
+      this.computeBalance(this.prisma, workspaceId),
+      this.prisma.workspace.findUnique({ where: { id: workspaceId } }),
+      this.prisma.walletLedgerEntry.aggregate({
+        where: { workspaceId, direction: 'IN', status: 'COMPLETED', postedAt: { gte: new Date(Date.now() - 86_400_000) } },
+        _sum: { amount: true },
+        _count: true,
+      }),
+    ]);
+
+    // Money needed to clear everything currently payable in open batches.
+    const items = await this.prisma.batchItem.findMany({
+      where: { batch: { workspaceId, payoutStatus: { not: 'CANCELLED' } }, payoutStatus: { notIn: ['CANCELLED', 'SUCCESS'] } },
+      include: { payouts: true },
     });
-    return round2(toNumber(result._sum.amount ?? 0));
+    const needed = round2(
+      items.filter((i) => lineSafety(i).selectable).reduce((s, i) => s + outstandingOf(i.total, i.paidAmount), 0),
+    );
+
+    let status: 'HEALTHY' | 'ATTENTION' | 'ACTION_NEEDED';
+    let message: string;
+    if (balance.balance < 0) {
+      status = 'ACTION_NEEDED';
+      message = 'Ledger shows more going out than came in — reconcile top-ups now.';
+    } else if (needed <= balance.readyToSend) {
+      status = 'HEALTHY';
+      message = needed > 0 ? 'Enough to pay every open batch.' : 'Nothing waiting to be paid.';
+    } else if (balance.readyToSend >= needed * 0.5) {
+      status = 'ATTENTION';
+      message = `₦${round2(needed - balance.readyToSend).toLocaleString()} short of paying every open batch.`;
+    } else {
+      status = 'ACTION_NEEDED';
+      message = `Top up: ₦${round2(needed - balance.readyToSend).toLocaleString()} short of paying every open batch.`;
+    }
+
+    return {
+      ...balance,
+      health: { status, label: { HEALTHY: 'Healthy', ATTENTION: 'Attention', ACTION_NEEDED: 'Action needed' }[status], message, needed },
+      inflows24h: { amount: round2(toNum(inflows._sum.amount)), count: inflows._count },
+      account: this.accountOf(workspace),
+    };
+  }
+
+  private accountOf(workspace: { monnifyReservedAccountNumber: string | null; monnifyReservedAccountName: string | null; monnifyReservedAccountBank: string | null; monnifyReservedAccountRef: string | null; monnifyContractCode: string | null } | null) {
+    if (!workspace?.monnifyReservedAccountNumber) return null;
+    return {
+      accountNumber: workspace.monnifyReservedAccountNumber,
+      accountName: workspace.monnifyReservedAccountName,
+      bankName: workspace.monnifyReservedAccountBank,
+      accountReference: workspace.monnifyReservedAccountRef,
+      contractCode: workspace.monnifyContractCode,
+    };
   }
 
   async listLedger(workspaceId: string, filter: WalletLedgerQueryDto) {
-    const { page = 1, limit = 20, type, startDate, endDate } = filter;
-    const skip = (page - 1) * limit;
+    const { page = 1, limit = 20, type, direction, status, startDate, endDate } = filter;
     const where: Prisma.WalletLedgerEntryWhereInput = {
       workspaceId,
       ...(type && { type }),
+      ...(direction && { direction }),
+      ...(status && { status }),
       ...((startDate || endDate) && {
-        createdAt: {
-          ...(startDate && { gte: startDate }),
-          ...(endDate && { lte: endDate }),
-        },
+        postedAt: { ...(startDate && { gte: startDate }), ...(endDate && { lte: endDate }) },
       }),
     };
-
     const [entries, total] = await Promise.all([
-      this.prisma.walletLedgerEntry.findMany({ where, skip, take: limit, orderBy: { createdAt: 'desc' } }),
+      this.prisma.walletLedgerEntry.findMany({
+        where,
+        skip: (page - 1) * limit,
+        take: limit,
+        orderBy: { postedAt: 'desc' },
+        include: { batch: { select: { batchRef: true } } },
+      }),
       this.prisma.walletLedgerEntry.count({ where }),
     ]);
-
-    return paginate(entries, total, page, limit);
+    const actorIds = [...new Set(entries.map((e) => e.actorUserId).filter((x): x is string => !!x))];
+    const actors = actorIds.length
+      ? await this.prisma.user.findMany({ where: { id: { in: actorIds } }, select: { id: true, displayName: true, firstName: true, lastName: true, email: true } })
+      : [];
+    const nameOf = new Map(actors.map((a) => [a.id, a.displayName || `${a.firstName} ${a.lastName}`.trim() || a.email]));
+    return paginate(
+      entries.map((e) => ({ ...e, actorName: e.actorUserId ? nameOf.get(e.actorUserId) ?? null : null })),
+      total,
+      page,
+      limit,
+    );
   }
 
-  /**
-   * Core ledger write — the only place that ever creates a WalletLedgerEntry. Reads the current
-   * balance (sum of prior entries) inside the caller's transaction and writes balanceBefore/
-   * balanceAfter atomically alongside the new entry, mirroring tarione's applyMovement pattern.
-   */
-  private async applyMovement(tx: Prisma.TransactionClient, workspaceId: string, params: ApplyMovementParams) {
-    const balanceBefore = await this.getBalanceInTx(tx, workspaceId);
-    const balanceAfter = round2(balanceBefore + params.signedDelta);
+  /** Top-Up History (spec §5.10.16): When, Payer, Reference, Amount, Source. */
+  async listTopups(workspaceId: string, pagination: PaginationDto) {
+    const { page = 1, limit = 20 } = pagination;
+    const where: Prisma.WalletTopupWhereInput = { workspaceId, status: 'SUCCESS' };
+    const [rows, total] = await Promise.all([
+      this.prisma.walletTopup.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: [{ paidAt: 'desc' }, { createdAt: 'desc' }] }),
+      this.prisma.walletTopup.count({ where }),
+    ]);
+    return paginate(rows, total, page, limit);
+  }
 
+  // ─── Ledger writes ────────────────────────────────────────────────────────
+
+  /**
+   * The only writer of WalletLedgerEntry rows. Caller must hold lockWallet() in `tx` so the
+   * balanceBefore/After snapshot is consistent. `amount` is unsigned; direction sets the sign.
+   */
+  async postEntry(
+    tx: Prisma.TransactionClient,
+    workspaceId: string,
+    entry: {
+      direction: LedgerDirection;
+      status: LedgerStatus;
+      amount: number;
+      type: WalletTransactionType;
+      reference?: string | null;
+      sourceType?: string;
+      sourceId?: string;
+      batchId?: string | null;
+      description?: string;
+      actorUserId?: string | null;
+    },
+  ) {
+    const before = (await this.computeBalance(tx, workspaceId)).balance;
+    const signed = entry.direction === 'IN' ? Math.abs(entry.amount) : -Math.abs(entry.amount);
+    const counts = (entry.direction === 'IN' && entry.status === 'COMPLETED') || (entry.direction === 'OUT' && entry.status !== 'FAILED' && entry.status !== 'REVERSED');
     return tx.walletLedgerEntry.create({
       data: {
         workspaceId,
-        type: params.type,
-        amount: params.signedDelta,
-        balanceBefore,
-        balanceAfter,
-        batchId: params.batchId,
-        reference: params.reference,
-        notes: params.notes,
+        type: entry.type,
+        direction: entry.direction,
+        status: entry.status,
+        amount: round2(signed),
+        balanceBefore: before,
+        balanceAfter: counts ? round2(before + signed) : before,
+        reference: entry.reference ?? undefined,
+        sourceType: entry.sourceType,
+        sourceId: entry.sourceId,
+        batchId: entry.batchId ?? undefined,
+        description: entry.description,
+        actorUserId: entry.actorUserId ?? undefined,
       },
     });
   }
 
-  /** Debits the workspace wallet. Never allowed to go negative — batches must be funded first. */
-  async debit(
-    tx: Prisma.TransactionClient,
-    workspaceId: string,
-    params: { amount: number; type: WalletTransactionType; batchId?: string; reference?: string; notes?: string },
-  ) {
-    const balanceBefore = await this.getBalanceInTx(tx, workspaceId);
-    const balanceAfter = round2(balanceBefore - Math.abs(params.amount));
-    if (balanceAfter < 0) {
-      throw new BadRequestException('Insufficient wallet balance for this debit');
-    }
-    return this.applyMovement(tx, workspaceId, { ...params, signedDelta: -Math.abs(params.amount) });
-  }
-
-  /** Credits the workspace wallet. */
-  async credit(
-    tx: Prisma.TransactionClient,
-    workspaceId: string,
-    params: { amount: number; type: WalletTransactionType; batchId?: string; reference?: string; notes?: string },
-  ) {
-    return this.applyMovement(tx, workspaceId, { ...params, signedDelta: Math.abs(params.amount) });
-  }
-
   /**
-   * Initiates a card-charge / virtual-account top-up reference via Monnify. The wallet is NOT
-   * credited here — only once the Monnify webhook confirms the collection (see
-   * MonnifyService.processWebhook -> recordSweep). This method just creates the PENDING
-   * WalletTopup row (wrapped in runIdempotent so a double-tap on "Top up" can never create two
-   * pending references) and then best-effort calls out to Monnify to get a checkout URL.
+   * Records a confirmed credit into the workspace wallet (webhook, reconciliation, card top-up).
+   * Idempotent on `reference`: a duplicate webhook or a re-run of "Reconcile top-ups" is a no-op.
    */
-  async topUp(workspaceId: string, dto: TopUpDto) {
-    const topup = await runIdempotent(this.prisma, workspaceId, 'WALLET_TOPUP', dto.clientRequestId, async (tx) => {
-      const reference = `PIF-TOPUP-${workspaceId.slice(0, 8)}-${Date.now()}`;
-      return tx.walletTopup.create({
-        data: { workspaceId, amount: dto.amount, monnifyReference: reference, status: 'PENDING' },
-      });
-    });
+  async recordTopup(workspaceId: string, params: RecordTopupParams): Promise<{ created: boolean; topupId: string }> {
+    if (!params.reference || !(params.amount > 0)) throw new BadRequestException('Top-up needs a reference and a positive amount');
+    const result = await this.prisma.$transaction(async (tx) => {
+      await lockWallet(tx, workspaceId);
+      const existing = await tx.walletTopup.findUnique({ where: { reference: params.reference } });
+      if (existing && existing.workspaceId !== workspaceId) {
+        this.logger.error(`Top-up reference ${params.reference} belongs to another workspace — ignored`);
+        return { created: false, topupId: existing.id };
+      }
+      if (existing?.status === 'SUCCESS') return { created: false, topupId: existing.id };
 
-    try {
-      const init = await this.monnifyService.initializeTransaction({
-        amount: toNumber(topup.amount),
-        reference: topup.monnifyReference,
-        customerEmail: `workspace-${workspaceId}@paidinfull.app`,
-        customerName: `Workspace ${workspaceId}`,
-        redirectUrl: dto.redirectUrl,
-      });
-      return { ...topup, checkoutUrl: init.checkoutUrl };
-    } catch (error) {
-      // Best-effort: the PENDING WalletTopup row still exists and can be retried/inspected even
-      // if Monnify's init call itself failed transiently.
-      return { ...topup, checkoutUrl: undefined, initError: error instanceof Error ? error.message : 'unknown error' };
-    }
-  }
+      const paidAt = params.paidAt ?? new Date();
+      const topup = existing
+        ? await tx.walletTopup.update({
+            where: { id: existing.id },
+            data: {
+              status: 'SUCCESS',
+              amount: params.amount,
+              paidAt,
+              completedAt: new Date(),
+              payerName: params.payerName ?? existing.payerName,
+              payerBank: params.payerBank ?? existing.payerBank,
+              payerAccountNumber: params.payerAccountNumber ?? existing.payerAccountNumber,
+            },
+          })
+        : await tx.walletTopup.create({
+            data: {
+              workspaceId,
+              amount: params.amount,
+              reference: params.reference,
+              payerName: params.payerName,
+              payerBank: params.payerBank,
+              payerAccountNumber: params.payerAccountNumber,
+              source: params.source,
+              status: 'SUCCESS',
+              paidAt,
+              completedAt: new Date(),
+            },
+          });
 
-  /**
-   * Records a Monnify collection confirmed via webhook as a SWEEP_IN credit — called for both an
-   * initiated WalletTopup completing and an unprompted transfer landing in the workspace's
-   * reserved account (see MonnifyService.processWebhook). Idempotent on monnifyReference (unique
-   * on WalletSweep) so a duplicate webhook delivery is a no-op.
-   */
-  async recordSweep(
-    workspaceId: string,
-    params: { monnifyReference: string; amount: number; sourceAccountNumber?: string; sourceAccountName?: string },
-  ) {
-    return this.prisma.$transaction(async (tx) => {
-      const existing = await tx.walletSweep.findUnique({ where: { monnifyReference: params.monnifyReference } });
-      if (existing) return existing;
-
-      const sweep = await tx.walletSweep.create({
-        data: {
-          workspaceId,
-          amount: params.amount,
-          monnifyReference: params.monnifyReference,
-          sourceAccountNumber: params.sourceAccountNumber,
-          sourceAccountName: params.sourceAccountName,
-          matchedAt: new Date(),
-        },
-      });
-
-      await this.credit(tx, workspaceId, {
+      await this.postEntry(tx, workspaceId, {
+        direction: 'IN',
+        status: 'COMPLETED',
         amount: params.amount,
-        type: 'SWEEP_IN',
-        reference: params.monnifyReference,
-        notes: 'Monnify collection sweep',
+        type: 'TOPUP',
+        reference: params.reference,
+        sourceType: 'topup',
+        sourceId: topup.id,
+        description: `Top-up${params.payerName ? ` from ${params.payerName}` : ''}${params.source === 'MANUAL_RECONCILIATION' ? ' (reconciled)' : ''}`,
       });
 
-      // Resolve any funding waits this sweep now covers. Only marks them FUNDED — actually
-      // re-triggering the disbursement is left to the batches endpoint / a scheduled sweep, since
-      // wiring that here would need BatchesService and would reintroduce the very Wallet<->Batches
-      // circular dependency this module already avoids for Monnify. See report TODO.
-      const balance = await this.getBalanceInTx(tx, workspaceId);
+      // Funding waits (spec: batches that were short) are resolved once the wallet covers them.
+      const balance = (await this.computeBalance(tx, workspaceId)).readyToSend;
       const waits = await tx.payoutFundingWait.findMany({ where: { workspaceId, status: 'WAITING' } });
       for (const wait of waits) {
-        if (balance >= toNumber(wait.requiredAmount)) {
+        if (balance >= toNum(wait.requiredAmount)) {
           await tx.payoutFundingWait.update({
             where: { id: wait.id },
             data: { status: 'FUNDED', availableAmount: balance, resolvedAt: new Date() },
           });
         }
       }
-
-      return sweep;
+      return { created: true, topupId: topup.id };
     });
+
+    if (result.created) {
+      await this.audit.record(workspaceId, null, AUDIT_ACTIONS.WALLET_TOPUP_RECEIVED, params.reference, {
+        amount: params.amount,
+        payerName: params.payerName,
+        source: params.source,
+      });
+    }
+    return result;
+  }
+
+  /**
+   * "Reconcile top-ups": back-fills missed webhooks by listing recent transactions on the
+   * reserved account and recording any we don't have. Idempotent on the Monnify reference.
+   */
+  async reconcileTopups(workspaceId: string, actor: AuditActor) {
+    const workspace = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
+    if (!workspace?.monnifyReservedAccountRef) {
+      throw new BadRequestException('No wallet account is linked to this workspace yet');
+    }
+    const txs = await this.monnifyService.listReservedAccountTransactions(workspace.monnifyReservedAccountRef);
+    let added = 0;
+    let addedAmount = 0;
+    for (const t of txs) {
+      if (t.status !== 'PAID' || !(t.amount > 0)) continue;
+      const res = await this.recordTopup(workspaceId, {
+        reference: t.reference,
+        amount: t.amount,
+        payerName: t.payerName,
+        payerBank: t.payerBank,
+        payerAccountNumber: t.payerAccountNumber,
+        paidAt: t.paidAt,
+        source: 'MANUAL_RECONCILIATION',
+      });
+      if (res.created) {
+        added++;
+        addedAmount = round2(addedAmount + t.amount);
+      }
+    }
+    await this.audit.record(workspaceId, actor, AUDIT_ACTIONS.WALLET_TOPUPS_RECONCILED, workspace.monnifyReservedAccountNumber, {
+      checked: txs.length,
+      added,
+      addedAmount,
+    });
+    return {
+      checked: txs.length,
+      added,
+      addedAmount,
+      message:
+        added === 0
+          ? `Up to date — checked ${txs.length} recent transactions, nothing missing`
+          : `Checked ${txs.length} recent transactions, added ${added} missing top-up${added === 1 ? '' : 's'}`,
+    };
+  }
+
+  // ─── Reserved account (admin) ─────────────────────────────────────────────
+
+  async provisionAccount(workspaceId: string, actor: AuditActor, dto: ProvisionReservedAccountDto) {
+    const workspace = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
+    if (!workspace) throw new NotFoundException('Workspace not found');
+    if (workspace.monnifyReservedAccountNumber) {
+      throw new BadRequestException('A wallet account is already linked. Unlink it before provisioning a new one.');
+    }
+    if (!dto.bvn && !dto.nin) throw new BadRequestException('BVN or NIN is required to provision a reserved account');
+    const accountName = dto.accountName?.trim() || workspace.name;
+    const created = await this.monnifyService.createReservedAccount({
+      accountReference: `PIF-${workspaceId}`,
+      accountName,
+      currencyCode: dto.currency ?? workspace.currency ?? 'NGN',
+      contractCode: dto.contractCode ?? workspace.monnifyContractCode ?? undefined,
+      customerName: dto.customerName ?? accountName,
+      customerEmail: dto.customerEmail ?? `workspace-${workspaceId}@paidinfull.app`,
+      bvn: dto.bvn,
+      nin: dto.nin,
+    });
+    const updated = await this.prisma.workspace.update({
+      where: { id: workspaceId },
+      data: {
+        monnifyReservedAccountNumber: created.accountNumber,
+        monnifyReservedAccountName: created.accountName ?? accountName,
+        monnifyReservedAccountBank: created.bankName,
+        monnifyReservedAccountRef: created.accountReference,
+        monnifyContractCode: created.contractCode ?? dto.contractCode ?? workspace.monnifyContractCode,
+      },
+    });
+    await this.audit.record(workspaceId, actor, 'wallet.account_provisioned', created.accountNumber, {
+      bank: created.bankName,
+      accountReference: created.accountReference,
+    });
+    return this.accountOf(updated);
+  }
+
+  async linkAccount(workspaceId: string, actor: AuditActor, dto: LinkReservedAccountDto) {
+    const workspace = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
+    if (!workspace) throw new NotFoundException('Workspace not found');
+    if (workspace.monnifyReservedAccountNumber) {
+      throw new BadRequestException('A wallet account is already linked. Unlink it first.');
+    }
+    const clash = await this.prisma.workspace.findFirst({
+      where: { id: { not: workspaceId }, monnifyReservedAccountRef: dto.accountReference },
+      select: { id: true },
+    });
+    if (clash) throw new BadRequestException('That reserved account is already linked to another workspace');
+
+    const found = await this.monnifyService.getReservedAccount(dto.accountReference);
+    if (!found) throw new BadRequestException('Monnify has no reserved account with that reference');
+    const account = dto.accountNumber ? found.accounts.find((a) => a.accountNumber === dto.accountNumber) : found.accounts[0];
+    if (!account) {
+      throw new BadRequestException('That account number does not belong to the reserved account reference given');
+    }
+    const updated = await this.prisma.workspace.update({
+      where: { id: workspaceId },
+      data: {
+        monnifyReservedAccountNumber: account.accountNumber,
+        monnifyReservedAccountName: found.accountName ?? dto.accountName ?? workspace.name,
+        monnifyReservedAccountBank: account.bankName ?? dto.bankName ?? null,
+        monnifyReservedAccountRef: found.accountReference,
+        monnifyContractCode: found.contractCode ?? workspace.monnifyContractCode,
+      },
+    });
+    await this.audit.record(workspaceId, actor, 'wallet.account_linked', account.accountNumber, { accountReference: found.accountReference });
+    return this.accountOf(updated);
+  }
+
+  /** "Rename to workspace". Local display name only (see comment in MonnifyService). */
+  async renameAccount(workspaceId: string, actor: AuditActor, dto: RenameReservedAccountDto) {
+    const workspace = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
+    if (!workspace?.monnifyReservedAccountNumber) throw new BadRequestException('No wallet account is linked');
+    const name = dto.accountName?.trim() || workspace.name;
+    const updated = await this.prisma.workspace.update({ where: { id: workspaceId }, data: { monnifyReservedAccountName: name } });
+    await this.audit.record(workspaceId, actor, 'wallet.account_renamed', workspace.monnifyReservedAccountNumber, {
+      from: workspace.monnifyReservedAccountName,
+      to: name,
+    });
+    return this.accountOf(updated);
+  }
+
+  async unlinkAccount(workspaceId: string, actor: AuditActor) {
+    const workspace = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
+    if (!workspace?.monnifyReservedAccountNumber) throw new BadRequestException('No wallet account is linked');
+    await this.prisma.workspace.update({
+      where: { id: workspaceId },
+      data: {
+        monnifyReservedAccountNumber: null,
+        monnifyReservedAccountName: null,
+        monnifyReservedAccountBank: null,
+        monnifyReservedAccountRef: null,
+      },
+    });
+    await this.audit.record(workspaceId, actor, 'wallet.account_unlinked', workspace.monnifyReservedAccountNumber, {
+      accountReference: workspace.monnifyReservedAccountRef,
+    });
+    return { unlinked: true };
+  }
+
+  // ─── Card / checkout top-up ───────────────────────────────────────────────
+
+  /**
+   * Creates a PENDING WalletTopup and a Monnify checkout. The wallet is only credited when the
+   * collection webhook (or reconciliation) confirms it, through recordTopup().
+   */
+  async topUp(workspaceId: string, dto: TopUpDto) {
+    const topup = await runIdempotent(this.prisma, workspaceId, 'WALLET_TOPUP', dto.clientRequestId, async (tx) => {
+      const reference = `PIF-TOPUP-${workspaceId.slice(0, 8)}-${Date.now()}`;
+      return tx.walletTopup.create({
+        data: { workspaceId, amount: dto.amount, reference, source: 'CARD', status: 'PENDING' },
+      });
+    });
+
+    try {
+      const init = await this.monnifyService.initializeTransaction({
+        amount: toNum(topup.amount),
+        reference: topup.reference,
+        customerEmail: `workspace-${workspaceId}@paidinfull.app`,
+        customerName: `Workspace ${workspaceId}`,
+        redirectUrl: dto.redirectUrl,
+      });
+      return { ...topup, checkoutUrl: init.checkoutUrl };
+    } catch (error) {
+      return { ...topup, checkoutUrl: undefined, initError: error instanceof Error ? error.message : 'unknown error' };
+    }
   }
 }

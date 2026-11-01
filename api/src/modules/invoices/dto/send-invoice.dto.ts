@@ -1,16 +1,29 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsIn, IsNotEmpty, IsString } from 'class-validator';
+import { ApiPropertyOptional } from '@nestjs/swagger';
+import { IsArray, IsEmail, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 
-export type InvoiceSendChannel = 'EMAIL' | 'WHATSAPP' | 'SMS';
+export type InvoiceSendChannel = 'EMAIL' | 'WHATSAPP';
 
 export class SendInvoiceDto {
-  @ApiProperty({ enum: ['EMAIL', 'WHATSAPP', 'SMS'] })
-  @IsNotEmpty()
-  @IsIn(['EMAIL', 'WHATSAPP', 'SMS'])
-  channel: InvoiceSendChannel;
+  @ApiPropertyOptional({ enum: ['EMAIL', 'WHATSAPP'], default: 'EMAIL' })
+  @IsOptional()
+  @IsIn(['EMAIL', 'WHATSAPP'])
+  channel?: InvoiceSendChannel;
 
-  @ApiProperty({ example: 'customer@example.com or +2348012345678' })
-  @IsNotEmpty()
+  @ApiPropertyOptional({ description: 'Email address or WhatsApp phone; defaults to the customer email/phone' })
+  @IsOptional()
   @IsString()
-  recipient: string;
+  @MaxLength(200)
+  recipient?: string;
+
+  @ApiPropertyOptional({ type: [String], description: 'Email CC addresses' })
+  @IsOptional()
+  @IsArray()
+  @IsEmail({}, { each: true })
+  cc?: string[];
+
+  @ApiPropertyOptional({ description: 'Custom WhatsApp message (the share link is appended)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  message?: string;
 }

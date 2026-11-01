@@ -24,4 +24,16 @@ export class CreateCustomerDto {
   @IsString()
   @MaxLength(500)
   address?: string;
+
+  @ApiPropertyOptional({ example: '12345678-0001', description: 'Customer TIN' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  taxId?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(5000)
+  notes?: string;
 }
