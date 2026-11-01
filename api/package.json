@@ -37,6 +37,7 @@
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.3",
     "cloudinary": "^2.9.0",
+    "jszip": "^3.10.1",
     "openai": "^6.45.0",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
@@ -64,5 +65,8 @@
     "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
     "typescript": "^5.9.3"
+  },
+  "prisma": {
+    "seed": "ts-node prisma/seed.ts"
   }
 }
