@@ -50,7 +50,7 @@ export function parseAmount(value: string | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-const HEADER_NAMES = new Set(['paycategory', 'costcenter', 'period', 'amount']);
+const HEADER_NAMES = new Set(['coatag', 'coa', 'costline', 'paycategory', 'costcenter', 'period', 'amount']);
 
 // A row is treated as a header if its first cell looks like one of the expected column names
 // rather than actual data (e.g. "payCategory" vs "Marketing").

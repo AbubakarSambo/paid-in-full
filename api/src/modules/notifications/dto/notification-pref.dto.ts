@@ -1,18 +1,19 @@
-import { IsArray, IsBoolean, IsIn, IsString, ValidateNested } from 'class-validator';
+import { IsArray, IsBoolean, IsIn, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
+import { NOTIFICATION_CHANNELS, NOTIFICATION_EVENTS, NotificationChannel, NotificationEvent } from '../notification-events';
 
-export const NOTIFICATION_CHANNELS = ['EMAIL', 'PUSH', 'WHATSAPP'] as const;
-export type NotificationChannel = (typeof NOTIFICATION_CHANNELS)[number];
+export { NOTIFICATION_CHANNELS };
+export type { NotificationChannel };
 
 export class NotificationPrefItemDto {
   @ApiProperty({ enum: NOTIFICATION_CHANNELS })
-  @IsIn(NOTIFICATION_CHANNELS)
+  @IsIn(NOTIFICATION_CHANNELS as unknown as string[])
   channel: NotificationChannel;
 
-  @ApiProperty({ example: 'QUEUE_ITEM_ADDED' })
-  @IsString()
-  event: string;
+  @ApiProperty({ enum: NOTIFICATION_EVENTS })
+  @IsIn(NOTIFICATION_EVENTS as unknown as string[])
+  event: NotificationEvent;
 
   @ApiProperty()
   @IsBoolean()

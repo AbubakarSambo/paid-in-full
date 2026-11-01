@@ -1,20 +1,8 @@
-import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { ApiPropertyOptional, PartialType } from '@nestjs/swagger';
+import { IsBoolean, IsOptional } from 'class-validator';
+import { CreatePayCategoryDto } from './create-pay-category.dto';
 
-export class UpdatePayCategoryDto {
-  @ApiPropertyOptional({ example: 'Marketing' })
-  @IsOptional()
-  @IsString()
-  @MinLength(1)
-  @MaxLength(255)
-  name?: string;
-
-  @ApiPropertyOptional({ example: 'MKT' })
-  @IsOptional()
-  @IsString()
-  @MaxLength(50)
-  code?: string;
-
+export class UpdatePayCategoryDto extends PartialType(CreatePayCategoryDto) {
   @ApiPropertyOptional({ example: true })
   @IsOptional()
   @IsBoolean()

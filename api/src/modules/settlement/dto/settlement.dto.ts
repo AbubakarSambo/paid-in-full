@@ -1,5 +1,5 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { ArrayMinSize, IsArray, IsNotEmpty, IsNumber, IsString, Min, ValidateNested } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ArrayMinSize, IsArray, IsNotEmpty, IsNumber, IsOptional, IsString, IsUUID, Min, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class CreateSettlementBatchDto {
@@ -37,4 +37,56 @@ export class CreateSettlementBatchItemsDto {
   @ValidateNested({ each: true })
   @Type(() => SettlementBatchItemInputDto)
   items: SettlementBatchItemInputDto[];
+}
+
+export class StatementPreviewDto {
+  @ApiProperty({ description: 'Raw bank statement CSV text. Columns are auto-detected (date, narration, debit, reference).' })
+  @IsString()
+  @IsNotEmpty()
+  csv: string;
+}
+
+export class StatementMatchDto {
+  @ApiProperty()
+  @IsUUID()
+  batchItemId: string;
+
+  @ApiProperty({ description: 'Gross amount to record as paid on the line' })
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  amount: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  debit?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  statementDate?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  statementReference?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @ApiPropertyOptional({ description: 'Statement row number (keeps STMT- references unique per row)' })
+  @IsOptional()
+  @IsNumber()
+  row?: number;
+}
+
+export class ConfirmStatementMatchesDto {
+  @ApiProperty({ type: [StatementMatchDto] })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => StatementMatchDto)
+  matches: StatementMatchDto[];
 }

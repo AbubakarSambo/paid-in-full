@@ -1,55 +1,52 @@
-import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Delete, Get, Param, ParseBoolPipe, ParseUUIDPipe, Patch, Post, Put, Query } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { CostCentersService } from './cost-centers.service';
 import { CreateCostCenterDto, UpdateCostCenterDto } from './dto';
-import { CurrentUser, Roles, Role } from '../../common';
+import { ReorderDto } from '../pay-categories/dto/reorder.dto';
+import { CurrentUser, CurrentUserData, Capability, RequireCapability } from '../../common';
 
-@ApiTags('Cost Centers')
+/** Business Units. */
+@ApiTags('Business Units (Cost Centers)')
 @ApiBearerAuth()
 @Controller('cost-centers')
 export class CostCentersController {
   constructor(private readonly costCentersService: CostCentersService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List cost centers for the current workspace' })
-  @ApiResponse({ status: 200, description: 'List of cost centers' })
-  async findAll(@CurrentUser('workspaceId') workspaceId: string) {
-    return this.costCentersService.findAll(workspaceId);
+  @ApiOperation({ summary: 'List business units (optionally with their BU heads)' })
+  @ApiQuery({ name: 'includeHeads', required: false, type: Boolean })
+  @ApiQuery({ name: 'activeOnly', required: false, type: Boolean })
+  async findAll(
+    @CurrentUser('workspaceId') workspaceId: string,
+    @Query('includeHeads', new ParseBoolPipe({ optional: true })) includeHeads?: boolean,
+    @Query('activeOnly', new ParseBoolPipe({ optional: true })) activeOnly?: boolean,
+  ) {
+    return this.costCentersService.findAll(workspaceId, { includeHeads, activeOnly });
+  }
+
+  @Put('reorder')
+  @RequireCapability(Capability.ADMIN)
+  async reorder(@Body() dto: ReorderDto, @CurrentUser('workspaceId') workspaceId: string) {
+    return this.costCentersService.reorder(workspaceId, dto.ids);
   }
 
   @Post()
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
-  @ApiOperation({ summary: 'Create a cost center' })
-  @ApiResponse({ status: 201, description: 'Cost center created' })
-  async create(
-    @Body() dto: CreateCostCenterDto,
-    @CurrentUser('workspaceId') workspaceId: string,
-  ) {
-    return this.costCentersService.create(workspaceId, dto);
+  @RequireCapability(Capability.ADMIN)
+  @ApiOperation({ summary: 'Create a business unit (name, code)' })
+  async create(@Body() dto: CreateCostCenterDto, @CurrentUser() user: CurrentUserData) {
+    return this.costCentersService.create(user.workspaceId, dto, user);
   }
 
   @Patch(':id')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
-  @ApiOperation({ summary: 'Update a cost center' })
-  @ApiResponse({ status: 200, description: 'Cost center updated' })
-  @ApiResponse({ status: 404, description: 'Cost center not found' })
-  async update(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: UpdateCostCenterDto,
-    @CurrentUser('workspaceId') workspaceId: string,
-  ) {
-    return this.costCentersService.update(workspaceId, id, dto);
+  @RequireCapability(Capability.ADMIN)
+  async update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateCostCenterDto, @CurrentUser() user: CurrentUserData) {
+    return this.costCentersService.update(user.workspaceId, id, dto, user);
   }
 
   @Delete(':id')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
-  @ApiOperation({ summary: 'Deactivate a cost center' })
-  @ApiResponse({ status: 200, description: 'Cost center deactivated' })
-  @ApiResponse({ status: 404, description: 'Cost center not found' })
-  async remove(
-    @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser('workspaceId') workspaceId: string,
-  ) {
-    return this.costCentersService.remove(workspaceId, id);
+  @RequireCapability(Capability.ADMIN)
+  @ApiOperation({ summary: 'Delete a business unit (deactivates instead if referenced)' })
+  async remove(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: CurrentUserData) {
+    return this.costCentersService.remove(user.workspaceId, id, user);
   }
 }

@@ -2,9 +2,12 @@ import { BadRequestException, Injectable, Logger, NotFoundException } from '@nes
 import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
+import { MonnifyService } from '../monnify/monnify.service';
+import { AuditLogService } from '../platform/audit-log.service';
 import { runIdempotent } from '../../common';
 import { ChargeSubscriptionDto, MonnifyWebhookDto, UpgradeSubscriptionDto } from './dto';
-import { SubscriptionStatus } from '@prisma/client';
+import { SubscriptionStatus, WorkspaceStatus } from '@prisma/client';
+import { PIF_GRACE_DAYS, pifDueInfo, subscriptionStatusFor } from './pif-billing';
 
 // Dunning schedule: 1st retry after 1 day, 2nd after 3 days, 3rd after 7 days. If the charge
 // still fails after the 3rd retry (4 consecutive failures total), we stop retrying and expire
@@ -15,6 +18,12 @@ function addDays(date: Date, days: number): Date {
   const d = new Date(date);
   d.setDate(d.getDate() + days);
   return d;
+}
+
+function ordinal(n: number) {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return `${n}${s[(v - 20) % 10] || s[v] || s[0]}`;
 }
 
 function addMonths(date: Date, months: number): Date {
@@ -30,7 +39,156 @@ export class BillingService {
   constructor(
     private prisma: PrismaService,
     private configService: ConfigService,
+    private monnify: MonnifyService,
+    private audit: AuditLogService,
   ) {}
+
+  // ─── PIF's own subscription (spec §5.10 #17) ──────────────────────────────
+
+  /** Settings → "Your Paid In Full subscription": tier, amount, next due, paid-up-to, NUBAN, history. */
+  async getPifSubscription(workspaceId: string) {
+    const ws = await this.prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: {
+        name: true,
+        status: true,
+        tier: true,
+        planTier: true,
+        monthlyAmount: true,
+        billingDay: true,
+        paidUntil: true,
+        nextDueDate: true,
+        trialEndDate: true,
+        billingAccountNumber: true,
+        billingAccountName: true,
+        billingAccountBank: true,
+        subscription: { select: { payments: { orderBy: { paidAt: 'desc' }, take: 50 } } },
+      },
+    });
+    if (!ws) throw new NotFoundException('Workspace not found');
+    const due = pifDueInfo(ws);
+    return {
+      tier: ws.tier ?? ws.planTier,
+      monthlyAmount: ws.monthlyAmount == null ? null : Number(ws.monthlyAmount),
+      status: ws.status,
+      paused: ws.status === WorkspaceStatus.PAUSED,
+      nextDueDate: due.nextDue,
+      paidUntil: ws.paidUntil,
+      trialEndDate: ws.trialEndDate,
+      overdue: due.overdue,
+      daysOverdue: due.daysOverdue,
+      graceEndsAt: due.graceEndsAt,
+      billingDay: ws.billingDay ?? 25,
+      rule: `Pay by the ${ordinal(ws.billingDay ?? 25)} for the next month. Paused if not paid within ${PIF_GRACE_DAYS} days of the due date.`,
+      billingAccount: ws.billingAccountNumber
+        ? { accountNumber: ws.billingAccountNumber, accountName: ws.billingAccountName, bankName: ws.billingAccountBank }
+        : null,
+      payments: (ws.subscription?.payments ?? []).map((p) => ({ id: p.id, amount: Number(p.amount), reference: p.monnifyReference, paidAt: p.paidAt })),
+    };
+  }
+
+  /**
+   * Creates the dedicated billing NUBAN (Monnify reserved account, reference `pifbill-<workspaceId>`).
+   * BVN/NIN is passed through to Monnify (required for reserved accounts on live contracts).
+   * Incoming transfers to this NUBAN should call recordPifPayment() (not wired to the Monnify webhook yet).
+   */
+  async provisionPifBillingAccount(workspaceId: string, actorId: string, kyc: { bvn?: string; nin?: string }) {
+    const ws = await this.prisma.workspace.findUnique({ where: { id: workspaceId }, select: { name: true, billingAccountNumber: true } });
+    if (!ws) throw new NotFoundException('Workspace not found');
+    if (ws.billingAccountNumber) return this.getPifSubscription(workspaceId);
+    if (!kyc.bvn && !kyc.nin) throw new BadRequestException('Enter a BVN or NIN to create your billing account.');
+    const accountName = `PIF - ${ws.name}`.slice(0, 60);
+    const owner = await this.prisma.workspaceMember.findFirst({
+      where: { workspaceId, role: 'ADMIN', isActive: true },
+      orderBy: { invitedAt: 'asc' },
+      include: { user: { select: { email: true } } },
+    });
+    const acct = await this.monnify.createReservedAccount({
+      accountReference: `pifbill-${workspaceId}`,
+      accountName,
+      customerName: ws.name,
+      customerEmail: owner?.user.email ?? `billing-${workspaceId}@paidinfull.app`,
+      bvn: kyc.bvn,
+      nin: kyc.nin,
+    });
+    await this.prisma.workspace.update({
+      where: { id: workspaceId },
+      data: {
+        billingAccountNumber: acct.accountNumber,
+        billingAccountName: acct.accountName ?? accountName,
+        billingAccountBank: acct.bankName,
+        billingAccountRef: acct.accountReference,
+      },
+    });
+    await this.audit.record(workspaceId, actorId, 'billing.account_provisioned', acct.accountNumber, { bank: acct.bankName, kyc: kyc.bvn ? 'BVN' : 'NIN' });
+    return this.getPifSubscription(workspaceId);
+  }
+
+  /**
+   * Records a PIF fee payment (manual by super admin, or from a billing-NUBAN collection webhook).
+   * Extends paid-until by the number of whole months the amount covers (min 1) and un-pauses.
+   * Idempotent on `reference`.
+   */
+  async recordPifPayment(workspaceId: string, amount: number, reference: string, paidAt = new Date(), actorId?: string | null) {
+    if (!(amount > 0)) throw new BadRequestException('Amount must be greater than 0.');
+    const existing = await this.prisma.billingPayment.findUnique({ where: { monnifyReference: reference } });
+    if (existing) return this.getPifSubscription(workspaceId);
+
+    const ws = await this.prisma.workspace.findUnique({ where: { id: workspaceId }, include: { subscription: true } });
+    if (!ws) throw new NotFoundException('Workspace not found');
+
+    let subscriptionId = ws.subscription?.id;
+    if (!subscriptionId) {
+      const plan =
+        (await this.prisma.billingPlan.findUnique({ where: { tier: ws.planTier } })) ??
+        (await this.prisma.billingPlan.create({
+          data: { tier: ws.planTier, name: ws.planTier, priceMonthly: ws.monthlyAmount ?? amount, features: {} },
+        }));
+      const sub = await this.prisma.workspaceSubscription.create({
+        data: { workspaceId, billingPlanId: plan.id, currentPeriodStart: paidAt, currentPeriodEnd: ws.paidUntil ?? paidAt },
+      });
+      subscriptionId = sub.id;
+    }
+
+    const monthly = ws.monthlyAmount ? Number(ws.monthlyAmount) : amount;
+    const months = Math.max(1, Math.floor(amount / Math.max(monthly, 1)));
+    const base = ws.paidUntil && ws.paidUntil > paidAt ? ws.paidUntil : paidAt;
+    const paidUntil = addMonths(base, months);
+    const status = ws.status === WorkspaceStatus.PAUSED || ws.status === WorkspaceStatus.TRIAL || ws.status === WorkspaceStatus.LEAD ? WorkspaceStatus.ACTIVE : ws.status;
+
+    await this.prisma.$transaction([
+      this.prisma.billingPayment.create({ data: { workspaceSubscriptionId: subscriptionId, amount, monnifyReference: reference, paidAt } }),
+      this.prisma.workspaceSubscription.update({ where: { id: subscriptionId }, data: { currentPeriodEnd: paidUntil } }),
+      this.prisma.workspace.update({
+        where: { id: workspaceId },
+        data: { paidUntil, nextDueDate: paidUntil, status, subscriptionStatus: subscriptionStatusFor(status) },
+      }),
+    ]);
+    await this.audit.record(workspaceId, actorId ?? null, 'billing.payment_recorded', reference, { amount, months, paidUntil });
+    return this.getPifSubscription(workspaceId);
+  }
+
+  /** Daily: pause clients not paid within 7 days of their due date. */
+  @Cron('0 6 * * *')
+  async pauseOverdueWorkspaces() {
+    const candidates = await this.prisma.workspace.findMany({
+      where: { status: { in: [WorkspaceStatus.ACTIVE, WorkspaceStatus.TRIAL] }, isGrandfathered: false },
+      select: { id: true, name: true, status: true, paidUntil: true, nextDueDate: true, trialEndDate: true, billingDay: true },
+    });
+    let paused = 0;
+    for (const ws of candidates) {
+      const due = pifDueInfo(ws);
+      if (!due.shouldPause) continue;
+      await this.prisma.workspace.update({
+        where: { id: ws.id },
+        data: { status: WorkspaceStatus.PAUSED, subscriptionStatus: subscriptionStatusFor(WorkspaceStatus.PAUSED) },
+      });
+      await this.audit.record(ws.id, null, 'billing.workspace_paused', ws.name, { nextDueDate: due.nextDue, daysOverdue: due.daysOverdue });
+      paused += 1;
+    }
+    if (paused) this.logger.warn(`Paused ${paused} workspace(s) unpaid ${PIF_GRACE_DAYS}+ days past due`);
+    return { paused };
+  }
 
   // ─── Subscription read/upgrade ────────────────────────────────────────────
 

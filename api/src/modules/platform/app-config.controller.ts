@@ -12,13 +12,13 @@ export class AppConfigAdminController {
   constructor(private readonly appConfigService: AppConfigAdminService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List all platform AppConfig key-value rows' })
+  @ApiOperation({ summary: 'List all platform PlatformConfig key-value rows' })
   async list() {
     return this.appConfigService.list();
   }
 
   @Patch()
-  @ApiOperation({ summary: 'Upsert a single AppConfig key-value row' })
+  @ApiOperation({ summary: 'Upsert a single PlatformConfig key-value row' })
   async upsert(@Body() dto: UpsertAppConfigDto) {
     return this.appConfigService.upsert(dto);
   }

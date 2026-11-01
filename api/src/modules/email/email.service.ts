@@ -14,6 +14,8 @@ import {
   SubscriptionPaymentFailedEmailData,
   SubscriptionPaymentReceiptEmailData,
   SubscriptionSuspendedEmailData,
+  EmailVerifyEmailData,
+  NotificationEmailData,
 } from './email.types';
 
 interface EmailHtmlOptions {
@@ -43,6 +45,7 @@ const UNSUBSCRIBABLE_TEMPLATES = new Set<EmailTemplateName>([
   'SUBSCRIPTION_PAYMENT_FAILED',
   'SUBSCRIPTION_PAYMENT_RECEIPT',
   'SUBSCRIPTION_SUSPENDED',
+  'NOTIFICATION',
 ]);
 
 @Injectable()
@@ -77,6 +80,11 @@ export class EmailService {
     brand = brand.trim().replace(/\/$/, '');
     if (!/^https?:\/\//i.test(brand)) brand = `https://${brand}`;
     this.brandWebsiteUrl = brand;
+  }
+
+  /** Public app origin used in emailed links (FRONTEND_URL). */
+  get frontendBaseUrl(): string {
+    return this.frontendUrl;
   }
 
   /**
@@ -158,6 +166,10 @@ export class EmailService {
 
     if (error) {
       this.logger.error(`Failed to send email to ${options.to}: ${error.name} - ${error.message}`);
+      if (this.configService.get<string>('app.nodeEnv') !== 'production') {
+        // Dev convenience: surface the links so auth flows stay testable with a bad/missing key.
+        for (const m of options.html.matchAll(/href="([^"]+)"/g)) this.logger.warn(`[UNSENT EMAIL] ${options.subject} | Link: ${m[1]}`);
+      }
       throw new Error(`Failed to send email: ${error.message}`);
     }
 
@@ -320,7 +332,8 @@ export class EmailService {
 
       case 'PASSWORD_RESET': {
         const d = data as PasswordResetEmailData;
-        const url = `${this.frontendUrl}/reset-password?token=${d.token}`;
+        // One public page handles invite acceptance and password reset (spec §2 /set-password).
+        const url = `${this.frontendUrl}/set-password?token=${d.token}&reset=1`;
         return {
           subject: 'Reset your Paid in Full password',
           html: this.buildEmailHtml({
@@ -458,6 +471,44 @@ export class EmailService {
             `,
             ctaText: 'Reactivate Subscription',
             ctaUrl: `${this.frontendUrl}/settings/billing`,
+            unsubscribeUrl,
+          }),
+        };
+      }
+
+      case 'EMAIL_VERIFY': {
+        const d = data as EmailVerifyEmailData;
+        const url = `${this.frontendUrl}/login?verify=${d.token}`;
+        return {
+          subject: 'Confirm your Paid in Full email',
+          html: this.buildEmailHtml({
+            contextLabel: 'Security',
+            headline: 'Confirm your email address',
+            bodyHtml: `
+              <p>Hi ${d.firstName || 'there'},</p>
+              <p>Confirm this email address to finish setting up your Paid in Full account.</p>
+            `,
+            ctaText: 'Confirm Email',
+            ctaUrl: url,
+            footerNote: 'This link is valid for 3 days. If you did not create an account, you can ignore this email.',
+          }),
+        };
+      }
+
+      case 'NOTIFICATION': {
+        const d = data as NotificationEmailData;
+        const ctaUrl = d.url ? (/^https?:\/\//i.test(d.url) ? d.url : `${this.frontendUrl}${d.url.startsWith('/') ? '' : '/'}${d.url}`) : undefined;
+        return {
+          subject: d.workspaceName ? `${d.title} · ${d.workspaceName}` : d.title,
+          html: this.buildEmailHtml({
+            contextLabel: d.workspaceName || 'Notification',
+            headline: d.title,
+            bodyHtml: `
+              <p>Hi ${d.recipientName || 'there'},</p>
+              <p>${d.body}</p>
+            `,
+            ctaText: ctaUrl ? d.ctaText || 'Open Paid in Full' : undefined,
+            ctaUrl,
             unsubscribeUrl,
           }),
         };

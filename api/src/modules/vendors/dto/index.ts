@@ -2,3 +2,4 @@ export * from './create-vendor.dto';
 export * from './update-vendor.dto';
 export * from './vendor-query.dto';
 export * from './verify-account.dto';
+export * from './bulk-vendors.dto';

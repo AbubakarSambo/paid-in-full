@@ -4,7 +4,8 @@ import { AiService } from './ai.service';
 import { SuggestCategoryDto } from './dto/suggest-category.dto';
 import { CleanDescriptionDto } from './dto/clean-description.dto';
 import { ParseExpenseDto } from './dto/parse-expense.dto';
-import { CurrentUser } from '../../common';
+import { ImproveDescriptionsDto, ValidateDescriptionDto } from './dto/improve-descriptions.dto';
+import { Capability, CurrentUser, DESCRIPTION_MAX_LENGTH, DESCRIPTION_PATTERN, RequireCapability, validateDescription } from '../../common';
 
 @ApiTags('AI')
 @ApiBearerAuth()
@@ -28,5 +29,22 @@ export class AiController {
   @ApiOperation({ summary: 'Extract vendor/amount/description/date from a pasted freeform note (degrades gracefully)' })
   async parseExpense(@Body() dto: ParseExpenseDto) {
     return this.aiService.parseExpense(dto.freeText);
+  }
+
+  @Post('validate-description')
+  @ApiOperation({ summary: 'Spec §7 Description Rules: one message per failed rule' })
+  validateDescription(@Body() dto: ValidateDescriptionDto) {
+    const errors = validateDescription(dto.description, dto.vendorName);
+    return { valid: errors.length === 0, errors, pattern: DESCRIPTION_PATTERN, maxLength: DESCRIPTION_MAX_LENGTH };
+  }
+
+  @Post('improve-descriptions')
+  @RequireCapability(Capability.REQUEST)
+  @ApiOperation({
+    summary:
+      'Tidy up / Improve with AI (batch): rewrite to the guide, title-case, and suggest category + COA from the workspace tags',
+  })
+  improveDescriptions(@CurrentUser('workspaceId') workspaceId: string, @Body() dto: ImproveDescriptionsDto) {
+    return this.aiService.improveDescriptions(workspaceId, dto.items);
   }
 }

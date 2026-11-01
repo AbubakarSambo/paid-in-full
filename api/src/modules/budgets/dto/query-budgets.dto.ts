@@ -9,10 +9,10 @@ export class QueryBudgetsDto {
   @Matches(PERIOD_PATTERN, { message: 'period must be in YYYY-MM format' })
   period?: string;
 
-  @ApiPropertyOptional({ description: 'Filter by pay category id' })
+  @ApiPropertyOptional({ description: 'Filter by COA tag id' })
   @IsOptional()
   @IsUUID()
-  payCategoryId?: string;
+  coaTagId?: string;
 
   @ApiPropertyOptional({ description: 'Filter by cost center id' })
   @IsOptional()

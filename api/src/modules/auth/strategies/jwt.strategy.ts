@@ -3,23 +3,21 @@ import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PrismaService } from '../../prisma/prisma.service';
+import type { CurrentUserData } from '../../../common/decorators/current-user.decorator';
+import { PlatformRoleName, Role } from '../../../common/decorators/roles.decorator';
 
 export interface JwtPayload {
   sub: string; // userId
   email: string;
   workspaceId: string;
+  /** Workspace role at sign-in time (informational; the DB is re-read on every request). */
+  role?: string | null;
+  isBiller?: boolean;
+  /** Legacy `[role]`. */
   roles: string[];
 }
 
-interface ValidatedUser {
-  id: string;
-  email: string;
-  workspaceId: string;
-  roles: string[];
-  firstName: string;
-  lastName: string;
-  isPlatformAdmin: boolean;
-}
+type ValidatedUser = CurrentUserData;
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -53,24 +51,42 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     const [row, membership] = await Promise.all([
       this.prisma.user.findUnique({
         where: { id: userId },
-        select: { id: true, email: true, firstName: true, lastName: true, isActive: true, isPlatformAdmin: true },
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          displayName: true,
+          isActive: true,
+          platformRole: true,
+        },
       }),
       this.prisma.workspaceMember.findUnique({
         where: { workspaceId_userId: { workspaceId, userId } },
-        select: { role: true, isActive: true },
+        select: { role: true, isBiller: true, isActive: true },
       }),
     ]);
 
-    const user =
-      row && row.isActive && (row.isPlatformAdmin || (membership && membership.isActive))
+    const isPlatformAdmin = row?.platformRole === 'SUPER_ADMIN';
+    // PIF staff (SUPER_ADMIN, CLIENT_SETUP) may hold a token without a workspace membership; their
+    // workspace capabilities are then empty and only platform-guarded routes work.
+    const isPlatformStaff = !!row?.platformRole;
+    const activeMembership = membership && membership.isActive ? membership : null;
+
+    const user: ValidatedUser | null =
+      row && row.isActive && (isPlatformStaff || activeMembership)
         ? {
             id: row.id,
             email: row.email,
             workspaceId,
-            roles: membership ? [membership.role] : [],
+            role: activeMembership ? (activeMembership.role as Role) : null,
+            isBiller: activeMembership?.isBiller ?? false,
+            roles: activeMembership ? [activeMembership.role] : [],
             firstName: row.firstName,
             lastName: row.lastName,
-            isPlatformAdmin: row.isPlatformAdmin,
+            displayName: row.displayName || `${row.firstName} ${row.lastName}`.trim(),
+            platformRole: (row.platformRole as PlatformRoleName | null) ?? null,
+            isPlatformAdmin,
           }
         : null;
 

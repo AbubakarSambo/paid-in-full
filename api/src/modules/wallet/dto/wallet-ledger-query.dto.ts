@@ -1,7 +1,7 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { IsDate, IsEnum, IsOptional } from 'class-validator';
-import { WalletTransactionType } from '@prisma/client';
+import { LedgerDirection, LedgerStatus, WalletTransactionType } from '@prisma/client';
 import { PaginationDto } from '../../../common';
 
 export class WalletLedgerQueryDto extends PaginationDto {
@@ -9,6 +9,16 @@ export class WalletLedgerQueryDto extends PaginationDto {
   @IsOptional()
   @IsEnum(WalletTransactionType)
   type?: WalletTransactionType;
+
+  @ApiPropertyOptional({ enum: LedgerDirection })
+  @IsOptional()
+  @IsEnum(LedgerDirection)
+  direction?: LedgerDirection;
+
+  @ApiPropertyOptional({ enum: LedgerStatus })
+  @IsOptional()
+  @IsEnum(LedgerStatus)
+  status?: LedgerStatus;
 
   @ApiPropertyOptional({ description: 'Start date for filtering' })
   @IsOptional()

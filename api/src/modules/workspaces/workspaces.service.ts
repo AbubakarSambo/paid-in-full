@@ -1,103 +1,112 @@
-import { Injectable, Logger, NotFoundException, ConflictException } from '@nestjs/common';
-import { randomBytes } from 'crypto';
-import * as bcrypt from 'bcrypt';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { EmailService } from '../email/email.service';
-import { UpdateWorkspaceDto, InviteMemberDto } from './dto';
+import { AppConfigService } from '../app-config/app-config.service';
+import { AuditLogService } from '../platform/audit-log.service';
+import { AUDIT_ACTIONS, CurrentUserData } from '../../common';
+import { storeImage, UploadedImageFile } from '../uploads/image-upload';
+import { UpdateWorkspaceDto, WORKSPACE_CURRENCIES, INDUSTRIES } from './dto';
+
+const LOGO_MAX_BYTES = 2 * 1024 * 1024; // spec §5.10 #4: 2 MB
+
+/** dto field → AppConfig key */
+const CONFIG_FIELDS = {
+  requisitionsEnabled: 'requisitions_enabled',
+  businessUnitsRequired: 'business_units_required',
+  sessionTimeoutMinutes: 'session_timeout_minutes',
+  requireReauthForDisbursement: 'require_reauth_for_disbursement',
+} as const;
 
 @Injectable()
 export class WorkspacesService {
-  private readonly logger = new Logger(WorkspacesService.name);
-
   constructor(
     private prisma: PrismaService,
-    private emailService: EmailService,
+    private appConfig: AppConfigService,
+    private audit: AuditLogService,
   ) {}
 
+  /** Workspace profile + the settings every screen needs (module toggle, BU rule, timeouts). */
   async findOne(id: string) {
-    const workspace = await this.prisma.workspace.findUnique({ where: { id } });
-    if (!workspace) throw new NotFoundException('Workspace not found');
-    return workspace;
-  }
-
-  async update(id: string, dto: UpdateWorkspaceDto) {
-    await this.findOne(id);
-    return this.prisma.workspace.update({
+    const workspace = await this.prisma.workspace.findUnique({
       where: { id },
-      data: {
-        ...(dto.name && { name: dto.name }),
-        ...(dto.invoicePrefix && { invoicePrefix: dto.invoicePrefix }),
-        ...(typeof dto.taxRate === 'number' && { taxRate: dto.taxRate }),
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        logoUrl: true,
+        currency: true,
+        timezone: true,
+        industry: true,
+        tin: true,
+        status: true,
+        invoicePrefix: true,
+        taxRate: true,
+        trialEndDate: true,
+        createdAt: true,
+        monnifyReservedAccountNumber: true,
+        monnifyReservedAccountName: true,
+        monnifyReservedAccountBank: true,
       },
     });
+    if (!workspace) throw new NotFoundException('Workspace not found');
+    const cfg = await this.appConfig.getMany(id, Object.values(CONFIG_FIELDS));
+    return {
+      ...workspace,
+      settings: {
+        requisitionsEnabled: cfg.requisitions_enabled !== false,
+        businessUnitsRequired: cfg.business_units_required === true,
+        sessionTimeoutMinutes: Number(cfg.session_timeout_minutes) || 30,
+        requireReauthForDisbursement: cfg.require_reauth_for_disbursement === true,
+      },
+      options: { currencies: WORKSPACE_CURRENCIES, industries: INDUSTRIES },
+    };
   }
 
-  /**
-   * Adds an existing user to the workspace, or — if the email has never signed up — creates an
-   * inactive placeholder User plus a SET_PASSWORD verification token so they can claim the
-   * account. Email delivery of that token is wired in the email module (see EmailService).
-   */
-  async inviteMember(workspaceId: string, dto: InviteMemberDto) {
-    let user = await this.prisma.user.findUnique({ where: { email: dto.email } });
+  async update(id: string, actor: CurrentUserData, dto: UpdateWorkspaceDto) {
+    const before = await this.prisma.workspace.findUnique({ where: { id } });
+    if (!before) throw new NotFoundException('Workspace not found');
+    if (dto.logoUrl && !/^(https?:\/\/|data:image\/)/i.test(dto.logoUrl)) throw new BadRequestException('Logo must be an image URL.');
+    if (dto.timezone) this.assertTimezone(dto.timezone);
 
-    if (!user) {
-      const randomPasswordHash = await bcrypt.hash(randomBytes(24).toString('hex'), 12);
-      user = await this.prisma.user.create({
-        data: {
-          email: dto.email,
-          passwordHash: randomPasswordHash,
-          firstName: '',
-          lastName: '',
-          isActive: false,
-        },
-      });
+    const data = {
+      ...(dto.name !== undefined && { name: dto.name.trim() }),
+      ...(dto.logoUrl !== undefined && { logoUrl: dto.logoUrl || null }),
+      ...(dto.currency !== undefined && { currency: dto.currency }),
+      ...(dto.timezone !== undefined && { timezone: dto.timezone }),
+      ...(dto.industry !== undefined && { industry: dto.industry.trim() || null }),
+      ...(dto.tin !== undefined && { tin: dto.tin.trim() || null }),
+      ...(dto.invoicePrefix !== undefined && { invoicePrefix: dto.invoicePrefix.trim() || 'INV' }),
+      ...(dto.taxRate !== undefined && { taxRate: dto.taxRate }),
+    };
+    if (Object.keys(data).length) {
+      await this.prisma.workspace.update({ where: { id }, data });
+      const changed = Object.fromEntries(
+        Object.entries(data).map(([k, v]) => [k, k === 'logoUrl' && typeof v === 'string' && v.startsWith('data:') ? '(uploaded image)' : v]),
+      );
+      await this.audit.record(id, actor, AUDIT_ACTIONS.CONFIG_UPDATED, 'workspace', changed);
     }
 
-    const existingMembership = await this.prisma.workspaceMember.findUnique({
-      where: { workspaceId_userId: { workspaceId, userId: user.id } },
-    });
-    if (existingMembership) {
-      throw new ConflictException('This person is already a member of the workspace');
+    const cfg: Record<string, unknown> = {};
+    for (const [field, key] of Object.entries(CONFIG_FIELDS)) {
+      const v = (dto as Record<string, unknown>)[field];
+      if (v !== undefined) cfg[key] = v;
     }
+    if (Object.keys(cfg).length) await this.appConfig.setMany(id, cfg, actor);
 
-    const membership = await this.prisma.workspaceMember.create({
-      data: { workspaceId, userId: user.id, role: dto.role },
-    });
+    return this.findOne(id);
+  }
 
-    const token = await this.prisma.emailVerificationToken.create({
-      data: {
-        userId: user.id,
-        token: randomBytes(32).toString('hex'),
-        type: 'SET_PASSWORD',
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      },
-    });
+  async uploadLogo(id: string, actor: CurrentUserData, file: UploadedImageFile | undefined) {
+    const url = await storeImage(file, { maxBytes: LOGO_MAX_BYTES, folder: 'logos', label: 'logo' });
+    await this.prisma.workspace.update({ where: { id }, data: { logoUrl: url } });
+    await this.audit.record(id, actor, AUDIT_ACTIONS.CONFIG_UPDATED, 'workspace', { logoUrl: '(uploaded image)' });
+    return this.findOne(id);
+  }
 
-    const workspace = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
+  private assertTimezone(tz: string) {
     try {
-      await this.emailService.send(user.email, 'INVITE', {
-        token: token.token,
-        workspaceName: workspace?.name || 'your workspace',
-        firstName: user.firstName || undefined,
-      });
-    } catch (error) {
-      // Don't fail the invite if the email provider is briefly down — the token still
-      // works, and the invite can be resent/shared manually.
-      this.logger.error(`Failed to send invite email to ${user.email}`, error as Error);
+      new Intl.DateTimeFormat('en-GB', { timeZone: tz });
+    } catch {
+      throw new BadRequestException(`Unknown timezone "${tz}". Use an IANA name like Africa/Lagos.`);
     }
-
-    return { membership, inviteToken: token.token };
-  }
-
-  async removeMember(workspaceId: string, userId: string) {
-    const membership = await this.prisma.workspaceMember.findUnique({
-      where: { workspaceId_userId: { workspaceId, userId } },
-    });
-    if (!membership) throw new NotFoundException('Membership not found');
-
-    return this.prisma.workspaceMember.update({
-      where: { workspaceId_userId: { workspaceId, userId } },
-      data: { isActive: false },
-    });
   }
 }
