@@ -1,184 +1,219 @@
-import { useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { toast } from 'sonner'
-import { Check, X, Send, Plus } from 'lucide-react'
-import { requisitionsApi, vendorsApi } from '@/lib/api'
-import { Card, CardContent } from '@/components/ui/card'
+import { useEffect, useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { Plus, Search, Send } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import { Modal } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Select } from '@/components/ui/select'
-import { Textarea } from '@/components/ui/textarea'
-import { formatCurrency, formatDate } from '@/lib/utils'
+import { cn } from '@/lib/utils'
+import { formatNaira } from '@/lib/money'
+import { usePermissions } from '@/lib/permissions'
+import { requisitionKeys, requisitionsApi } from '@/lib/api/requisitions'
+import { apiErrorMessage } from '@/lib/api/queue'
+import type { RequisitionFilter, RequisitionRow } from '@/types/requisitions'
+import { Chip, shortDate } from '@/components/queue/common'
+import { StatusBadge } from '@/components/requisitions/shared'
+import { RequisitionForm } from '@/components/requisitions/RequisitionForm'
+import { RequisitionDetailModal } from '@/components/requisitions/RequisitionDetailModal'
+import { PushToQueueModal } from '@/components/requisitions/PushToQueueModal'
+
+const FILTERS: { key: RequisitionFilter; label: string }[] = [
+  { key: 'open', label: 'Open' },
+  { key: 'submitted', label: 'Submitted' },
+  { key: 'cleared', label: 'Cleared' },
+  { key: 'returned', label: 'Returned' },
+  { key: 'queued', label: 'Queued' },
+  { key: 'rejected', label: 'Rejected' },
+  { key: 'all', label: 'All' },
+]
 
 export default function RequisitionsPage() {
-  const qc = useQueryClient()
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [isCreateOpen, setCreateOpen] = useState(false)
-  const [form, setForm] = useState({ vendorId: '', amount: '', description: '' })
+  const perms = usePermissions()
+  const canRequest = perms.role !== null && perms.role.toUpperCase() !== 'VIEWER'
+  const [filter, setFilter] = useState<RequisitionFilter>('open')
+  const [search, setSearch] = useState('')
+  const [debounced, setDebounced] = useState('')
+  const [page, setPage] = useState(1)
+  const [formOpen, setFormOpen] = useState(false)
+  const [detailId, setDetailId] = useState<string | null>(null)
+  const [pushRows, setPushRows] = useState<RequisitionRow[] | null>(null)
+  const [checked, setChecked] = useState<Set<string>>(new Set())
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['requisitions'],
-    queryFn: () => requisitionsApi.list({ limit: 100 }),
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(search), 250)
+    return () => clearTimeout(t)
+  }, [search])
+  useEffect(() => setPage(1), [filter, debounced])
+
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: requisitionKeys.list(filter, debounced, page),
+    queryFn: () => requisitionsApi.list({ filter, search: debounced, page, limit: 50 }),
   })
-  const { data: vendors } = useQuery({ queryKey: ['vendors', 'all'], queryFn: () => vendorsApi.list({ limit: 200 }) })
+  const rows = data?.data ?? []
+  const checkedRows = useMemo(() => rows.filter((r) => checked.has(r.id) && r.status === 'PROCUREMENT_CLEARED'), [rows, checked])
+  const clearedOnPage = rows.filter((r) => r.status === 'PROCUREMENT_CLEARED')
 
-  const invalidate = () => qc.invalidateQueries({ queryKey: ['requisitions'] })
-
-  const createMutation = useMutation({
-    mutationFn: requisitionsApi.create,
-    onSuccess: () => {
-      toast.success('Requisition submitted')
-      setCreateOpen(false)
-      setForm({ vendorId: '', amount: '', description: '' })
-      invalidate()
-    },
-    onError: () => toast.error('Could not submit requisition'),
-  })
-  const approveMutation = useMutation({ mutationFn: requisitionsApi.approve, onSuccess: invalidate })
-  const rejectMutation = useMutation({ mutationFn: (id: string) => requisitionsApi.reject(id), onSuccess: invalidate })
-  const pushMutation = useMutation({
-    mutationFn: () => requisitionsApi.pushToQueue(Array.from(selected)),
-    onSuccess: () => {
-      toast.success('Pushed to queue')
-      setSelected(new Set())
-      invalidate()
-    },
-    onError: () => toast.error('Could not push to queue'),
-  })
-
-  function toggle(id: string) {
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
+  const toggle = (id: string, on: boolean) =>
+    setChecked((s) => {
+      const n = new Set(s)
+      if (on) n.add(id)
+      else n.delete(id)
+      return n
     })
-  }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-3">
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">Requisitions</h1>
-          <p className="text-sm text-muted-foreground">Approve requests before they hit the payment queue.</p>
+          <h1 className="text-2xl font-bold">Requisitions</h1>
+          <p className="text-sm text-text-dim">Staff raise requests, procurement clears them, accounts pushes to the payment queue.</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => setCreateOpen(true)}>
-            <Plus size={16} /> New requisition
-          </Button>
-          <Button disabled={selected.size === 0} isLoading={pushMutation.isPending} onClick={() => pushMutation.mutate()}>
-            <Send size={16} /> Push to queue ({selected.size})
-          </Button>
+          {perms.canApprove && checkedRows.length > 0 && (
+            <Button size="sm" variant="outline" onClick={() => setPushRows(checkedRows)}>
+              <Send size={14} /> Push {checkedRows.length} to queue
+            </Button>
+          )}
+          {canRequest && (
+            <Button size="sm" onClick={() => setFormOpen(true)}>
+              <Plus size={14} /> New requisition
+            </Button>
+          )}
         </div>
       </div>
 
-      <Card>
-        <CardContent className="p-0 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                <th className="p-4 w-10"></th>
-                <th className="p-4">Vendor</th>
-                <th className="p-4">Description</th>
-                <th className="p-4 text-right">Amount</th>
-                <th className="p-4">Status</th>
-                <th className="p-4">Date</th>
-                <th className="p-4 text-right">Actions</th>
+      <div className="flex flex-wrap items-center gap-2">
+        {FILTERS.map((f) => (
+          <button
+            key={f.key}
+            onClick={() => setFilter(f.key)}
+            className={cn(
+              'inline-flex h-9 items-center gap-1.5 rounded-full border px-3 text-xs font-semibold uppercase tracking-wider',
+              filter === f.key ? 'border-gold bg-gold/15 text-gold' : 'border-border text-text-dim hover:border-gold/40',
+            )}
+          >
+            {f.label}
+            <span className="tabular-nums opacity-70">{data?.counts?.[f.key] ?? 0}</span>
+          </button>
+        ))}
+        <div className="relative ml-auto w-full sm:w-72">
+          <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search vendor, item, department…"
+            className="h-9 w-full rounded-xl border border-input bg-card pl-9 pr-3 text-sm focus:border-gold focus:outline-none"
+          />
+        </div>
+      </div>
+
+      <div className="overflow-hidden rounded-2xl border border-border bg-card">
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[860px] text-sm">
+            <thead className="bg-surface2 text-[10px] uppercase tracking-wider text-text-dim">
+              <tr className="[&>th]:px-3 [&>th]:py-2.5 [&>th]:text-left [&>th]:font-semibold">
+                <th className="w-8">
+                  {perms.canApprove && clearedOnPage.length > 0 && (
+                    <input
+                      type="checkbox"
+                      className="accent-[var(--gold)]"
+                      checked={clearedOnPage.every((r) => checked.has(r.id))}
+                      onChange={(e) => clearedOnPage.forEach((r) => toggle(r.id, e.target.checked))}
+                    />
+                  )}
+                </th>
+                <th>Date</th>
+                <th>Department</th>
+                <th>Vendor</th>
+                <th>Description</th>
+                <th className="!text-right">Total</th>
+                <th>Requester</th>
+                <th>Status</th>
               </tr>
             </thead>
-            <tbody>
-              {isLoading && (
+            <tbody className="divide-y divide-border">
+              {isLoading ? (
                 <tr>
-                  <td colSpan={7} className="p-6 text-center text-muted-foreground">
+                  <td colSpan={8} className="py-10 text-center text-text-dim">
                     Loading…
                   </td>
                 </tr>
-              )}
-              {data?.data.map((r) => (
-                <tr key={r.id} className="border-b border-border last:border-0 hover:bg-secondary/40">
-                  <td className="p-4">
-                    {r.status === 'APPROVED' && (
-                      <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} />
-                    )}
-                  </td>
-                  <td className="p-4 font-medium text-foreground">{r.vendorName ?? '—'}</td>
-                  <td className="p-4 text-muted-foreground">{r.description ?? '—'}</td>
-                  <td className="p-4 text-right font-semibold text-foreground">{formatCurrency(r.amount)}</td>
-                  <td className="p-4">
-                    <Badge variant={r.status === 'APPROVED' ? 'success' : r.status === 'REJECTED' ? 'destructive' : 'outline'}>
-                      {r.status}
-                    </Badge>
-                  </td>
-                  <td className="p-4 text-muted-foreground">{r.createdAt ? formatDate(r.createdAt) : '—'}</td>
-                  <td className="p-4 text-right">
-                    {r.status === 'PENDING' && (
-                      <div className="flex items-center justify-end gap-2">
-                        <button
-                          onClick={() => approveMutation.mutate(r.id)}
-                          className="text-success hover:opacity-80"
-                          aria-label="Approve"
-                        >
-                          <Check size={16} />
-                        </button>
-                        <button
-                          onClick={() => rejectMutation.mutate(r.id)}
-                          className="text-destructive hover:opacity-80"
-                          aria-label="Reject"
-                        >
-                          <X size={16} />
-                        </button>
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              ))}
-              {!isLoading && data?.data.length === 0 && (
+              ) : isError ? (
                 <tr>
-                  <td colSpan={7} className="p-6 text-center text-muted-foreground">
-                    No requisitions yet.
+                  <td colSpan={8} className="py-10 text-center text-red">
+                    {apiErrorMessage(error, 'Could not load requisitions')}
                   </td>
                 </tr>
+              ) : rows.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="py-10 text-center text-text-dim">
+                    No requisitions here.
+                  </td>
+                </tr>
+              ) : (
+                rows.map((r) => (
+                  <tr key={r.id} className="cursor-pointer hover:bg-surface2/50 [&>td]:px-3 [&>td]:py-2.5" onClick={() => setDetailId(r.id)}>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      {perms.canApprove && r.status === 'PROCUREMENT_CLEARED' && (
+                        <input type="checkbox" className="accent-[var(--gold)]" checked={checked.has(r.id)} onChange={(e) => toggle(r.id, e.target.checked)} />
+                      )}
+                    </td>
+                    <td className="whitespace-nowrap text-text-dim">{shortDate(r.date)}</td>
+                    <td>{r.department?.name ?? r.departmentName ?? '—'}</td>
+                    <td className="max-w-[160px] truncate">
+                      {r.vendor?.name ?? r.vendorName ?? '—'}
+                      {r.isNewVendor && <span className="ml-1 text-[10px] text-blue">NEW</span>}
+                    </td>
+                    <td className="max-w-[280px]">
+                      <div className="flex items-center gap-1.5">
+                        {r.bundleLabel && <Chip tone="gold">{r.bundleLabel}</Chip>}
+                        <span className="truncate">{r.description}</span>
+                      </div>
+                    </td>
+                    <td className="text-right font-semibold tabular-nums">{formatNaira(r.total)}</td>
+                    <td className="text-text-dim">{r.requesterName ?? '—'}</td>
+                    <td>
+                      <StatusBadge status={r.status} />
+                    </td>
+                  </tr>
+                ))
               )}
             </tbody>
           </table>
-        </CardContent>
-      </Card>
+        </div>
+        {data && data.meta.totalPages > 1 && (
+          <div className="flex items-center justify-between border-t border-border px-4 py-2 text-xs text-text-dim">
+            <span>
+              Page {data.meta.page} of {data.meta.totalPages} · {data.meta.total} total
+            </span>
+            <div className="flex gap-2">
+              <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+                Previous
+              </Button>
+              <Button size="sm" variant="outline" disabled={page >= data.meta.totalPages} onClick={() => setPage((p) => p + 1)}>
+                Next
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
 
-      <Modal isOpen={isCreateOpen} onClose={() => setCreateOpen(false)} title="New requisition">
-        <form
-          className="space-y-4"
-          onSubmit={(e) => {
-            e.preventDefault()
-            if (!form.vendorId || !form.amount) return toast.error('Vendor and amount are required')
-            createMutation.mutate({ vendorId: form.vendorId, amount: Number(form.amount), description: form.description })
-          }}
-        >
-          <Select value={form.vendorId} onChange={(e) => setForm((f) => ({ ...f, vendorId: e.target.value }))}>
-            <option value="">Select vendor…</option>
-            {vendors?.data.map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.name}
-              </option>
-            ))}
-          </Select>
-          <Input
-            type="number"
-            placeholder="Amount"
-            value={form.amount}
-            onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))}
-          />
-          <Textarea
-            placeholder="Description"
-            value={form.description}
-            onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-          />
-          <Button type="submit" className="w-full" isLoading={createMutation.isPending}>
-            Submit requisition
-          </Button>
-        </form>
-      </Modal>
+      <RequisitionForm open={formOpen} onClose={() => setFormOpen(false)} onSaved={(first) => first && (setFormOpen(false), setDetailId(first.id))} />
+      <RequisitionDetailModal
+        id={detailId}
+        onClose={() => setDetailId(null)}
+        canProcure={perms.canProcure}
+        canApprove={perms.canApprove}
+        onPush={(r) => {
+          setDetailId(null)
+          setPushRows([r])
+        }}
+      />
+      <PushToQueueModal
+        rows={pushRows}
+        onClose={() => setPushRows(null)}
+        onDone={() => {
+          setPushRows(null)
+          setChecked(new Set())
+        }}
+      />
     </div>
   )
 }
