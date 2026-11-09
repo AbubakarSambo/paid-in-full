@@ -153,7 +153,11 @@ ${amount !== undefined ? `Amount: NGN ${amount}` : ''}`;
   }
 
   async cleanDescription(rawDescription: string): Promise<CleanDescriptionResult> {
-    const system = `You clean up messy vendor invoice descriptions into a single clean, professional one-line description suitable for an accounting ledger. Do not invent facts not present in the input. Respond ONLY with a JSON object: { "cleaned": string }.`;
+    const system = `You clean up messy vendor invoice descriptions into a single clean, professional one-line description suitable for an accounting ledger, following this guide:
+- Pattern: "${DESCRIPTION_PATTERN}" — segments separated by " – " (spaced en-dash). Use only the segments the input supports; do not invent facts.
+- Start with the item; never start with "Purchase of" or "Payment for". No trailing full stop.
+- Keep any date given, as DD/MM/YYYY (or a month like "Sep 2026" / "Week N"). ${DESCRIPTION_MAX_LENGTH} characters max. No space before units (500ml, 25L, 1kg). Title Case.
+Respond ONLY with a JSON object: { "cleaned": string }.`;
     const user = `Raw description: "${rawDescription}"`;
 
     const result = await this.completeJson(system, user);

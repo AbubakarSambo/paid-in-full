@@ -90,6 +90,8 @@ export class WorkspacesService {
       const v = (dto as Record<string, unknown>)[field];
       if (v !== undefined) cfg[key] = v;
     }
+    // Keep the app-config copy of `industry` (written by the onboarding wizard) in step with the workspace record.
+    if (dto.industry !== undefined && dto.industry.trim()) cfg['industry'] = dto.industry.trim();
     if (Object.keys(cfg).length) await this.appConfig.setMany(id, cfg, actor);
 
     return this.findOne(id);

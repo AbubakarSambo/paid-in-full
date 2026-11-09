@@ -149,7 +149,7 @@ export default function BudgetsPage() {
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         {[
           { label: 'Total cap', v: kpis.totalCap },
-          { label: `Spent in ${monthLabel(period).split(' ')[0]}`, v: kpis.spent },
+          { label: `Committed in ${monthLabel(period).split(' ')[0]}`, v: kpis.spent },
           { label: 'Remaining', v: kpis.remaining, tone: kpis.remaining < 0 ? 'text-red' : 'text-green' },
         ].map((k) => (
           <div key={k.label} className="rounded-2xl border border-border bg-card p-4">

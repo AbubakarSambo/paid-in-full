@@ -261,7 +261,7 @@ export function BudgetWarningModal({
             <tr>
               <th className="px-3 py-2 text-left">Tag</th>
               <th className="px-3 py-2 text-right">Cap</th>
-              <th className="px-3 py-2 text-right">Spent</th>
+              <th className="px-3 py-2 text-right" title="Paid, approved into batches, and waiting in the queue">Committed</th>
               <th className="px-3 py-2 text-right">+This</th>
               <th className="px-3 py-2 text-right">Projected</th>
               <th className="px-3 py-2 text-right">Over by</th>

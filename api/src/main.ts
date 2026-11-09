@@ -27,7 +27,8 @@ async function bootstrap() {
           if (!origin || staticOrigins.includes(origin) || vercelPreviewPattern.test(origin)) {
             return callback(null, true);
           }
-          callback(new Error(`Origin ${origin} not allowed by CORS`));
+          // Not allowed: omit the CORS headers (the browser blocks it) instead of throwing a 500.
+          callback(null, false);
         },
     credentials: true,
   });
