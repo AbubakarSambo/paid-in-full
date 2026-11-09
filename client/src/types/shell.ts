@@ -204,6 +204,8 @@ export interface WalletSummary extends WalletBalance {
   health?: { status: string; label: string; message: string; needed: number }
   inflows24h?: { amount: number; count: number }
   account?: WalletAccount | null
+  /** True when the API runs Monnify in mock mode — enables the "Simulate payment" top-up. */
+  mockMode?: boolean
 }
 
 export interface SheetsStatus {

@@ -120,6 +120,7 @@ export class WalletService {
       health: { status, label: { HEALTHY: 'Healthy', ATTENTION: 'Attention', ACTION_NEEDED: 'Action needed' }[status], message, needed },
       inflows24h: { amount: round2(toNum(inflows._sum.amount)), count: inflows._count },
       account: this.accountOf(workspace),
+      mockMode: this.monnifyService.mockMode,
     };
   }
 

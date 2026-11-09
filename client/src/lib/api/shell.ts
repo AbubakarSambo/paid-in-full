@@ -147,6 +147,8 @@ export const notificationPrefsApi = {
 export const walletShellApi = {
   summary: () => data(api.get<WalletSummary>('/wallet')),
   balance: () => data(api.get<WalletBalance>('/wallet/balance')),
+  simulateTopup: (amount: number) =>
+    data(api.post<{ reference: string }>('/wallet/topup', { amount, clientRequestId: crypto.randomUUID() })),
   reconcileTopups: () => data(api.post<{ checked: number; added?: number; message: string }>('/wallet/topups/reconcile')),
 }
 
