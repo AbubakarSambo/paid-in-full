@@ -319,7 +319,19 @@ function TopUpDialog({ open, onClose }: { open: boolean; onClose: () => void }) 
   const navigate = useNavigate()
   const { data: wallet } = useWalletSummary()
   const { data: ws } = useWorkspaceConfig()
-  const { isAdmin } = usePermissions()
+  const { isAdmin, canPay } = usePermissions()
+  const qc = useQueryClient()
+  const [simAmount, setSimAmount] = useState('50000')
+  const simulate = useMutation({
+    mutationFn: () => walletShellApi.simulateTopup(Number(simAmount)),
+    onSuccess: () => {
+      toast.success('Simulated payment sent — your balance updates in a few seconds')
+      // The mock webhook fires ~4s after the request.
+      setTimeout(() => qc.invalidateQueries({ queryKey: ['wallet'] }), 5000)
+      onClose()
+    },
+    onError: (e) => toast.error(apiError(e).message),
+  })
   const account =
     wallet?.account ??
     (ws?.monnifyReservedAccountNumber
@@ -357,6 +369,21 @@ function TopUpDialog({ open, onClose }: { open: boolean; onClose: () => void }) 
             </div>
           </div>
           <p className="text-xs text-text-dim">Transfers usually land within a few minutes. If one is missing, use “Reconcile top-ups” in the ⋮ menu.</p>
+          {wallet?.mockMode && canPay && (
+            <div className="rounded-xl border border-dashed border-border p-4">
+              <p className="text-[11px] font-bold uppercase tracking-wider text-text-dim">Test mode</p>
+              <p className="mt-1 text-xs text-text-dim">Monnify is in mock mode, so real transfers aren't detected. Simulate one instead.</p>
+              <div className="mt-3 flex items-end gap-3">
+                <div className="flex-1">
+                  <Label htmlFor="sim-amount">Amount (₦)</Label>
+                  <Input id="sim-amount" type="number" min={1} value={simAmount} onChange={(e) => setSimAmount(e.target.value)} />
+                </div>
+                <Button variant="outline" isLoading={simulate.isPending} disabled={!(Number(simAmount) > 0)} onClick={() => simulate.mutate()}>
+                  Simulate payment
+                </Button>
+              </div>
+            </div>
+          )}
           <div className="flex justify-end">
             <Button onClick={onClose}>Done</Button>
           </div>
