@@ -71,7 +71,7 @@ export function BudgetRow({
           {row.cap === null && <Chip>No cap</Chip>}
         </div>
         <div className="mt-0.5 text-xs text-text-dim tabular-nums">
-          Spent {formatNaira(row.spent)}
+          <span title="Paid, approved into batches, and waiting in the queue">Committed</span> {formatNaira(row.spent)}
           {row.remaining !== null && (
             <>
               {' '}

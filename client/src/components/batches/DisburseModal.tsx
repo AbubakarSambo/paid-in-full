@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, CheckCircle2, Clock, Download, Loader2, RefreshCw, ShieldAlert, XCircle } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Clock, Download, Info, Loader2, RefreshCw, ShieldAlert, XCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -16,6 +16,7 @@ import {
   isOutcomeUnknown,
 } from '@/lib/api/batches'
 import { walletKeys } from '@/lib/api/wallet'
+import { useWalletSummary } from '@/components/layout/hooks'
 import type { BatchLine, DisbursePreview, DisbursePreviewInput, DisburseResult, LineResultLabel } from '@/types/batches'
 import { MicroLabel, Sheet, kobo, naira, nairaExact, parseAmount } from './shared'
 
@@ -43,6 +44,8 @@ export function DisburseModal({ batchId, batchRef, onClose, resumeClientRequestI
   // execute it twice; a new id only exists after the modal is closed and opened again.
   const [clientRequestId] = useState(() => resumeClientRequestId ?? crypto.randomUUID())
   const [phase, setPhase] = useState<Phase>(resumeClientRequestId ? 'recovering' : 'select')
+  const { data: walletSummary } = useWalletSummary()
+  const mockRail = walletSummary?.mockMode === true
 
   const detailQ = useQuery({ queryKey: batchKeys.detail(batchId), queryFn: () => batchesApi.get(batchId), enabled: !resumeClientRequestId })
   const pinQ = useQuery({ queryKey: ['me', 'pin'], queryFn: disburseAuthApi.pinStatus })
@@ -320,10 +323,17 @@ export function DisburseModal({ batchId, batchRef, onClose, resumeClientRequestI
       className="sm:max-w-3xl"
     >
       {(phase === 'select' || phase === 'confirm') && (
-        <div className="mb-4 flex items-start gap-2 rounded-xl border border-orange/40 bg-orange/10 px-3 py-2.5 text-sm text-orange">
-          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-          <span className="font-semibold">This will move real money via Monnify.</span>
-        </div>
+        mockRail ? (
+          <div className="mb-4 flex items-start gap-2 rounded-xl border border-border bg-surface2 px-3 py-2.5 text-sm text-text-dim">
+            <Info size={16} className="mt-0.5 shrink-0" />
+            <span className="font-semibold">Test mode: Monnify is mocked, so no real money will move.</span>
+          </div>
+        ) : (
+          <div className="mb-4 flex items-start gap-2 rounded-xl border border-orange/40 bg-orange/10 px-3 py-2.5 text-sm text-orange">
+            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+            <span className="font-semibold">This will move real money via Monnify.</span>
+          </div>
+        )
       )}
 
       {phase === 'select' && (
