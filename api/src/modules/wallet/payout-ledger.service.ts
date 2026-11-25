@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { LedgerStatus, PayoutStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { EmailService } from '../email/email.service';
 import { deriveBatchStatus, deriveLineStatus, toNum } from './payout-math';
 
 export type TransferOutcome = 'SUCCESS' | 'FAILED' | 'REVERSED';
@@ -28,15 +29,18 @@ export interface ApplyOutcomeOptions {
 export class PayoutLedgerService {
   private readonly logger = new Logger(PayoutLedgerService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly email: EmailService,
+  ) {}
 
   async applyTransferOutcome(
     transferReference: string,
     outcome: TransferOutcome,
     opts: ApplyOutcomeOptions = {},
-  ): Promise<{ found: boolean; changed: number; batchIds: string[] }> {
+  ): Promise<{ found: boolean; changed: number; batchIds: string[]; paidItemIds?: string[] }> {
     const confirmed = opts.confirmed !== false;
-    return this.prisma.$transaction(
+    const result = await this.prisma.$transaction(
       async (tx) => {
         const locked = await tx.$queryRaw<Array<{ id: string }>>`
           SELECT id FROM batch_item_payouts
@@ -121,12 +125,61 @@ export class PayoutLedgerService {
         for (const batchId of [...touchedBatches].sort()) {
           await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`payout-recompute:${batchId}`}))::text`;
         }
-        for (const itemId of touchedItems) await this.recomputeLine(tx, itemId);
+        const before = new Map(
+          (await tx.batchItem.findMany({ where: { id: { in: [...touchedItems] } }, select: { id: true, payoutStatus: true } })).map((i) => [i.id, i.payoutStatus]),
+        );
+        const paidItemIds: string[] = [];
+        for (const itemId of touchedItems) {
+          const after = await this.recomputeLine(tx, itemId);
+          if (after?.payoutStatus === 'SUCCESS' && before.get(itemId) !== 'SUCCESS') paidItemIds.push(itemId);
+        }
         for (const batchId of touchedBatches) await this.recomputeBatch(tx, batchId);
-        return { found: true, changed, batchIds: [...touchedBatches] };
+        return { found: true, changed, batchIds: [...touchedBatches], paidItemIds };
       },
       { timeout: 15_000, maxWait: 5_000 },
     );
+    // Lovable emailed the queuer and the original requisitor the first time a line became fully paid. Doing it
+    // here covers every path (webhook, status check, recovery), and only on the transition, so it never repeats.
+    if (result.paidItemIds?.length) void this.notifyPaid(result.paidItemIds);
+    return result;
+  }
+
+  /** "Payment made" email to the person who queued the line and to its requisitor. Best effort; never throws. */
+  async notifyPaid(itemIds: string[]) {
+    const money = new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 2 });
+    for (const itemId of itemIds) {
+      try {
+        const item = await this.prisma.batchItem.findUnique({
+          where: { id: itemId },
+          include: { batch: { select: { batchRef: true, workspace: { select: { name: true } } } } },
+        });
+        if (!item) continue;
+        const requisition = item.requisitionId
+          ? await this.prisma.requisition.findUnique({ where: { id: item.requisitionId }, select: { requestedById: true } })
+          : null;
+        const userIds = [item.createdById, requisition?.requestedById].filter((x): x is string => !!x);
+        const users = await this.prisma.user.findMany({
+          where: { id: { in: userIds }, isActive: true },
+          select: { email: true, displayName: true, firstName: true },
+        });
+        const recipients = new Map<string, string | undefined>();
+        for (const u of users) {
+          if (!recipients.has(u.email.toLowerCase())) recipients.set(u.email.toLowerCase(), u.displayName || u.firstName || undefined);
+        }
+        for (const [to, name] of recipients) {
+          await this.email.send(to, 'PAYMENT_MADE', {
+            recipientName: name,
+            vendorName: item.vendorName,
+            amount: money.format(Number(item.total)),
+            batchRef: item.batch.batchRef,
+            paidAt: new Date().toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' }),
+            workspaceName: item.batch.workspace.name,
+          });
+        }
+      } catch (error) {
+        this.logger.warn(`Payment-made email for item ${itemId} failed: ${(error as Error).message}`);
+      }
+    }
   }
 
   /** Re-derives paidAmount / payoutStatus / message for one line from its payout ledger. */

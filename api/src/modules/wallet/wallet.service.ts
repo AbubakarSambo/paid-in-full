@@ -288,6 +288,9 @@ export class WalletService {
     });
     if (result.created && result.funded?.length) await this.notifyFunded(workspaceId, result.funded);
 
+    // Lovable pushed "Wallet top-up" to the whole workspace on every live credit (not on back-fills).
+    if (result.created && params.source !== 'MANUAL_RECONCILIATION') await this.notifyTopup(workspaceId, params);
+
     if (result.created) {
       await this.audit.record(workspaceId, null, AUDIT_ACTIONS.WALLET_TOPUP_RECEIVED, params.reference, {
         amount: params.amount,
@@ -296,6 +299,20 @@ export class WalletService {
       });
     }
     return result;
+  }
+
+  private async notifyTopup(workspaceId: string, params: RecordTopupParams) {
+    try {
+      const members = await this.prisma.workspaceMember.findMany({ where: { workspaceId, isActive: true, joinedAt: { not: null } }, select: { userId: true } });
+      await this.notifications.notify(workspaceId, 'disbursement_result', {
+        title: `Wallet top-up: ₦${Math.round(params.amount).toLocaleString('en-NG')}`,
+        body: `From ${params.payerName ?? 'Unknown payer'}`,
+        url: '/app',
+        recipientUserIds: members.map((m) => m.userId),
+      });
+    } catch (error) {
+      this.logger.warn(`Top-up notification failed: ${(error as Error).message}`);
+    }
   }
 
   /** Lists recent transactions on the reserved account and records any we don't have. Idempotent on the Monnify reference. */
