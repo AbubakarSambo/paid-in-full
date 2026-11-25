@@ -524,11 +524,22 @@ export class MonnifyService {
   }
 
   /**
+   * Whether an unsigned / mismatched webhook is rejected outright (401). On by default for live
+   * traffic; MONNIFY_ENFORCE_WEBHOOK_SIGNATURE=false is the explicit escape hatch (e.g. if Monnify
+   * ever changes the signed string and deliveries must keep flowing while it is investigated).
+   * Mock mode has no secret to sign with, so it never enforces.
+   */
+  get enforceWebhookSignature(): boolean {
+    if (this.isMockMode) return false;
+    return process.env.MONNIFY_ENFORCE_WEBHOOK_SIGNATURE !== 'false';
+  }
+
+  /**
    * Monnify signs webhooks with `monnify-signature` = HMAC-SHA512(clientSecret, raw body).
-   * A mismatch is rejected only when MONNIFY_ENFORCE_WEBHOOK_SIGNATURE=true; otherwise an
-   * unsigned/mismatched webhook is treated as a hint and the outcome is re-queried from the
-   * Monnify API before anything is applied (see processWebhook), so a forged payload can never
-   * mark a transfer failed (which would make it re-payable) or credit a wallet.
+   * Defence in depth: even with enforcement switched off, an unsigned/mismatched webhook is only a
+   * hint — the outcome is re-queried from the Monnify API before anything is applied (see
+   * processWebhook), so a forged payload can never mark a transfer failed (which would make it
+   * re-payable) or credit a wallet.
    */
   verifyWebhookSignature(rawBody: string, receivedSignature: string | undefined): boolean {
     if (!this.secretKey || !receivedSignature) return false;
@@ -554,8 +565,11 @@ export class MonnifyService {
     }
 
     const signed = this.verifyWebhookSignature(rawBody, signatureHeader);
-    if (!signed && process.env.MONNIFY_ENFORCE_WEBHOOK_SIGNATURE === 'true') {
+    if (!signed && this.enforceWebhookSignature) {
       throw new UnauthorizedException('Invalid webhook signature');
+    }
+    if (!signed && !this.isMockMode) {
+      this.logger.warn('Accepting an unsigned/mismatched Monnify webhook (enforcement is off); outcome will be re-verified with Monnify');
     }
     const trusted = signed || this.isMockMode;
 
