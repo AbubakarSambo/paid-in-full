@@ -235,3 +235,10 @@ explicitly and run the smoke test with a small amount so it is crossed deliberat
 5. **Single-replica scheduler** -> brief downtime on deploys; avoid deploying during payout hours.
 6. **Role flattening** -> users losing access they had.
 7. **Stale audit** (Nov 20): production keeps moving; always re-export and diff.
+
+## Open blocker: Vercel deployments (25 Nov 2026)
+
+`paid-in-full-client` and `paid-in-full-marketing` builds are BLOCKED: "The Hobby Plan does not support collaboration for private repositories" /
+commit author without contributing access. GitHub login `AbubakarSambo` is not recognised as the Hobby owner (`abubakarsambo`); the team lists an
+unconfirmed `collecta` member requested from that same login. Tarione (`kulode`, public repo) is unaffected. Fix: relink GitHub to the owner
+account, or move to Pro. Must be resolved before any client/marketing change can ship.
