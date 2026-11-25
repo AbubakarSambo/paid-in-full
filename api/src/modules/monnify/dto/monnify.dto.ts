@@ -61,7 +61,10 @@ export interface ReservedAccountDetails {
 export interface ReservedAccountTransaction {
   /** Monnify transactionReference (MNFY|...) — the idempotency key for top-ups. */
   reference: string;
+  /** Gross amount the payer sent (amountPaid). */
   amount: number;
+  /** Net amount credited to the Monnify wallet after fees. The wallet ledger is credited with this, not `amount`. */
+  settlementAmount?: number | null;
   status: string; // PAID | PENDING | ...
   paidAt?: Date | null;
   payerName?: string | null;

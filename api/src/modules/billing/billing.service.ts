@@ -7,7 +7,7 @@ import { AuditLogService } from '../platform/audit-log.service';
 import { runIdempotent } from '../../common';
 import { ChargeSubscriptionDto, MonnifyWebhookDto, UpgradeSubscriptionDto } from './dto';
 import { SubscriptionStatus, WorkspaceStatus } from '@prisma/client';
-import { PIF_GRACE_DAYS, pifDueInfo, subscriptionStatusFor } from './pif-billing';
+import { PIF_GRACE_DAYS, pifDueInfo, pifPaymentCoverage, subscriptionStatusFor } from './pif-billing';
 
 // Dunning schedule: 1st retry after 1 day, 2nd after 3 days, 3rd after 7 days. If the charge
 // still fails after the 3rd retry (4 consecutive failures total), we stop retrying and expire
@@ -150,15 +150,24 @@ export class BillingService {
       subscriptionId = sub.id;
     }
 
-    const monthly = ws.monthlyAmount ? Number(ws.monthlyAmount) : amount;
-    const months = Math.max(1, Math.floor(amount / Math.max(monthly, 1)));
+    const plan = ws.subscription
+      ? await this.prisma.billingPlan.findUnique({ where: { id: ws.subscription.billingPlanId } })
+      : null;
+    const { months, coversSetup } = pifPaymentCoverage({
+      amount,
+      plan: plan
+        ? { monthly: Number(plan.priceMonthly), setupFee: Number(plan.setupFee ?? 0), prepayMonths: plan.prepayMonths ?? 0, prepayMonthly: Number(plan.prepayMonthlyAmount ?? 0) }
+        : null,
+      setupFeePaid: !!ws.subscription?.setupFeePaidAt,
+      fallbackMonthly: ws.monthlyAmount ? Number(ws.monthlyAmount) : amount,
+    });
     const base = ws.paidUntil && ws.paidUntil > paidAt ? ws.paidUntil : paidAt;
     const paidUntil = addMonths(base, months);
     const status = ws.status === WorkspaceStatus.PAUSED || ws.status === WorkspaceStatus.TRIAL || ws.status === WorkspaceStatus.LEAD ? WorkspaceStatus.ACTIVE : ws.status;
 
     await this.prisma.$transaction([
       this.prisma.billingPayment.create({ data: { workspaceSubscriptionId: subscriptionId, amount, monnifyReference: reference, paidAt } }),
-      this.prisma.workspaceSubscription.update({ where: { id: subscriptionId }, data: { currentPeriodEnd: paidUntil } }),
+      this.prisma.workspaceSubscription.update({ where: { id: subscriptionId }, data: { currentPeriodEnd: paidUntil, ...(coversSetup && { setupFeePaidAt: paidAt }) } }),
       this.prisma.workspace.update({
         where: { id: workspaceId },
         data: { paidUntil, nextDueDate: paidUntil, status, subscriptionStatus: subscriptionStatusFor(status) },
