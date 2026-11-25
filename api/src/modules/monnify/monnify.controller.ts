@@ -11,14 +11,14 @@ export class MonnifyController {
 
   constructor(private readonly monnifyService: MonnifyService) {}
 
-  // TODO(security): signature verification runs and logs a mismatch (see
-  // MonnifyService.verifyWebhookSignature) but does not reject on mismatch — the exact
-  // signed-string format Monnify uses is unconfirmed against a real delivery. Tighten this once
-  // confirmed against a live sandbox/production webhook.
+  // Signature: `monnify-signature` = HMAC-SHA512(secret key, raw body). Rejected with 401 unless it
+  // matches (MonnifyService.enforceWebhookSignature); outcomes of unsigned events are re-verified
+  // against Monnify's API even when enforcement is switched off.
   @Post('webhook')
   @Public()
-  @ApiOperation({ summary: "Monnify disbursement/collection webhook (signature logged, not yet enforced — see TODO)" })
+  @ApiOperation({ summary: "Monnify disbursement/collection webhook (HMAC-SHA512 signature required)" })
   @ApiResponse({ status: 200, description: 'Webhook processed' })
+  @ApiResponse({ status: 401, description: 'Missing or invalid monnify-signature' })
   async handleWebhook(@Headers('monnify-signature') signature: string | undefined, @Req() req: Request) {
     const rawBody = (req as any).rawBody?.toString() || JSON.stringify(req.body ?? {});
     this.logger.log('Received Monnify webhook');
