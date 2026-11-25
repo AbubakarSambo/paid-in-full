@@ -389,30 +389,81 @@ export class WalletService {
     }
   }
 
+  private sweeping = false;
+
   /**
-   * Every ten minutes (the "unblock affordable payouts" half of Lovable's monnify-sweep): a short batch
-   * that has become affordable by any means (reversal, adjustment, a top-up that raced) is marked FUNDED
-   * and the team is told. Moves no money.
+   * Funding watcher (port of Lovable's monnify-sweep; every 10 minutes). It moves no money. Per workspace it:
+   *  1. compares the ledger's available balance with the live Monnify wallet balance
+   *     (ready to pay = min of the two; clearing = ledger money Monnify has not released yet),
+   *  2. records the check in wallet_sweeps when anything changed (Lovable wrote a row every run; this keeps
+   *     the same history without 144 identical rows a day), `releasedAmount` being how much the live wallet
+   *     grew since the previous check,
+   *  3. marks WAITING shortfalls FUNDED once ready-to-pay covers them, and tells the team.
+   * An unreachable Monnify is recorded as "blocked" and never treated as a zero balance.
    */
-  async resolveFundingWaits() {
-    const rows = await this.prisma.payoutFundingWait.findMany({ where: { status: 'WAITING' }, select: { workspaceId: true }, distinct: ['workspaceId'] });
-    let resolved = 0;
-    for (const { workspaceId } of rows) {
-      try {
-        const funded = await this.prisma.$transaction(async (tx) => {
-          await lockWallet(tx, workspaceId);
-          const balance = (await this.computeBalance(tx, workspaceId)).readyToSend;
-          return this.fundWaits(tx, workspaceId, balance);
-        });
-        if (funded.length) {
-          resolved += funded.length;
-          await this.notifyFunded(workspaceId, funded);
+  async runSweep() {
+    if (this.sweeping) return { skipped: true as const };
+    this.sweeping = true;
+    try {
+      const [wallets, waits] = await Promise.all([
+        this.prisma.workspace.findMany({ where: { monnifyReservedAccountNumber: { not: null } }, select: { id: true } }),
+        this.prisma.payoutFundingWait.findMany({ where: { status: 'WAITING' }, select: { workspaceId: true }, distinct: ['workspaceId'] }),
+      ]);
+      const ids = new Set([...wallets.map((w) => w.id), ...waits.map((w) => w.workspaceId)]);
+      const live = await this.monnifyService.getWalletBalance(); // one shared Monnify wallet, one call per run
+      const results: Array<{ workspaceId: string; status: string; readyToPay: number; clearing: number; released: number; notified: number }> = [];
+      for (const workspaceId of ids) {
+        try {
+          results.push(await this.sweepWorkspace(workspaceId, live));
+        } catch (error) {
+          this.logger.warn(`Sweep failed for workspace ${workspaceId}: ${(error as Error).message}`);
         }
-      } catch (error) {
-        this.logger.warn(`Funding-wait check failed for workspace ${workspaceId}: ${(error as Error).message}`);
       }
+      return { skipped: false as const, workspaces: results.length, notified: results.reduce((s, r) => s + r.notified, 0), results };
+    } finally {
+      this.sweeping = false;
     }
-    return { resolved };
+  }
+
+  async sweepWorkspace(workspaceId: string, live: { available: number | null; reason: string | null }) {
+    const ledgerAvailable = (await this.computeBalance(this.prisma, workspaceId)).balance;
+    const liveBalance = live.available;
+    const readyToPay = liveBalance == null ? ledgerAvailable : Math.max(0, Math.min(ledgerAvailable, liveBalance));
+    const clearing = liveBalance == null ? 0 : Math.max(0, round2(ledgerAvailable - liveBalance));
+    const status = live.reason ? 'blocked' : clearing > 0 ? 'clearing' : 'ok';
+
+    const prev = await this.prisma.walletSweep.findFirst({ where: { workspaceId }, orderBy: { createdAt: 'desc' } });
+    const prevLive = prev?.liveWalletBalance == null ? null : toNum(prev.liveWalletBalance);
+    const released = liveBalance != null && prevLive != null ? Math.max(0, round2(liveBalance - prevLive)) : 0;
+    const changed =
+      !prev ||
+      prev.status !== status ||
+      (prev.reason ?? null) !== (live.reason ?? null) ||
+      prevLive !== liveBalance ||
+      round2(toNum(prev.ledgerAvailable)) !== round2(ledgerAvailable) ||
+      round2(toNum(prev.clearing)) !== clearing;
+    if (changed) {
+      await this.prisma.walletSweep.create({
+        data: {
+          workspaceId,
+          liveWalletBalance: liveBalance,
+          ledgerAvailable,
+          clearing,
+          releasedAmount: released,
+          amount: released,
+          status,
+          reason: live.reason,
+          raw: { readyToPay },
+        },
+      });
+    }
+
+    const funded = await this.prisma.$transaction(async (tx) => {
+      await lockWallet(tx, workspaceId);
+      return this.fundWaits(tx, workspaceId, readyToPay);
+    });
+    if (funded.length) await this.notifyFunded(workspaceId, funded);
+    return { workspaceId, status, readyToPay, clearing, released, notified: funded.length };
   }
 
   /**
