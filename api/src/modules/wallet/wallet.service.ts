@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogService, AuditActor } from '../platform/audit-log.service';
 import { AUDIT_ACTIONS, paginate, PaginationDto, runIdempotent } from '../../common';
 import { MonnifyService } from '../monnify/monnify.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { LinkReservedAccountDto, ProvisionReservedAccountDto, RenameReservedAccountDto, TopUpDto, WalletLedgerQueryDto } from './dto';
 import { lineSafety, outstandingOf, round2, toNum } from './payout-math';
 
@@ -46,6 +47,7 @@ export class WalletService {
     private readonly audit: AuditLogService,
     @Inject(forwardRef(() => MonnifyService))
     private readonly monnifyService: MonnifyService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // ─── Balance ──────────────────────────────────────────────────────────────
@@ -230,7 +232,7 @@ export class WalletService {
    */
   async recordTopup(workspaceId: string, params: RecordTopupParams): Promise<{ created: boolean; topupId: string }> {
     if (!params.reference || !(params.amount > 0)) throw new BadRequestException('Top-up needs a reference and a positive amount');
-    const result = await this.prisma.$transaction(async (tx) => {
+    const result: { created: boolean; topupId: string; funded?: { batchId: string; requiredAmount: number }[] } = await this.prisma.$transaction(async (tx) => {
       await lockWallet(tx, workspaceId);
       const existing = await tx.walletTopup.findUnique({ where: { reference: params.reference } });
       if (existing && existing.workspaceId !== workspaceId) {
@@ -281,17 +283,10 @@ export class WalletService {
 
       // Funding waits (spec: batches that were short) are resolved once the wallet covers them.
       const balance = (await this.computeBalance(tx, workspaceId)).readyToSend;
-      const waits = await tx.payoutFundingWait.findMany({ where: { workspaceId, status: 'WAITING' } });
-      for (const wait of waits) {
-        if (balance >= toNum(wait.requiredAmount)) {
-          await tx.payoutFundingWait.update({
-            where: { id: wait.id },
-            data: { status: 'FUNDED', availableAmount: balance, resolvedAt: new Date() },
-          });
-        }
-      }
-      return { created: true, topupId: topup.id };
+      const funded = await this.fundWaits(tx, workspaceId, balance);
+      return { created: true, topupId: topup.id, funded };
     });
+    if (result.created && result.funded?.length) await this.notifyFunded(workspaceId, result.funded);
 
     if (result.created) {
       await this.audit.record(workspaceId, null, AUDIT_ACTIONS.WALLET_TOPUP_RECEIVED, params.reference, {
@@ -303,16 +298,9 @@ export class WalletService {
     return result;
   }
 
-  /**
-   * "Reconcile top-ups": back-fills missed webhooks by listing recent transactions on the
-   * reserved account and recording any we don't have. Idempotent on the Monnify reference.
-   */
-  async reconcileTopups(workspaceId: string, actor: AuditActor) {
-    const workspace = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
-    if (!workspace?.monnifyReservedAccountRef) {
-      throw new BadRequestException('No wallet account is linked to this workspace yet');
-    }
-    const txs = await this.monnifyService.listReservedAccountTransactions(workspace.monnifyReservedAccountRef);
+  /** Lists recent transactions on the reserved account and records any we don't have. Idempotent on the Monnify reference. */
+  async syncTopups(workspaceId: string, accountReference: string) {
+    const txs = await this.monnifyService.listReservedAccountTransactions(accountReference);
     let added = 0;
     let addedAmount = 0;
     for (const t of txs) {
@@ -331,6 +319,164 @@ export class WalletService {
         addedAmount = round2(addedAmount + t.amount);
       }
     }
+    return { checked: txs.length, added, addedAmount };
+  }
+
+  private pollingTopups = false;
+
+  /**
+   * Every five minutes (Lovable: monnify-poll): replays reserved-account inflows whose webhook never
+   * arrived. Skipped in mock mode, where the listing is synthetic and would credit fake money.
+   */
+  async pollAllTopups() {
+    if (this.monnifyService.mockMode || this.pollingTopups) return { skipped: true as const };
+    this.pollingTopups = true;
+    const tally = { workspaces: 0, checked: 0, added: 0, addedAmount: 0, errors: 0, skipped: false as const };
+    try {
+      const workspaces = await this.prisma.workspace.findMany({
+        where: { monnifyReservedAccountRef: { not: null }, status: { not: 'DEAD' } },
+        select: { id: true, monnifyReservedAccountRef: true, monnifyReservedAccountNumber: true },
+      });
+      for (const w of workspaces) {
+        try {
+          const r = await this.syncTopups(w.id, w.monnifyReservedAccountRef!);
+          tally.workspaces++;
+          tally.checked += r.checked;
+          tally.added += r.added;
+          tally.addedAmount = round2(tally.addedAmount + r.addedAmount);
+          if (r.added > 0) {
+            await this.audit.record(w.id, null, AUDIT_ACTIONS.WALLET_TOPUPS_RECONCILED, w.monnifyReservedAccountNumber, { ...r, source: 'monnify-poll' });
+          }
+        } catch (error) {
+          tally.errors++;
+          this.logger.warn(`Top-up poll failed for workspace ${w.id}: ${(error as Error).message}`);
+        }
+      }
+      if (tally.added || tally.errors) this.logger.log(`Top-up poll: ${JSON.stringify(tally)}`);
+    } finally {
+      this.pollingTopups = false;
+    }
+    return tally;
+  }
+
+  /** Marks WAITING shortfalls FUNDED once the wallet covers them; returns the ones just resolved. */
+  private async fundWaits(db: Db, workspaceId: string, readyToSend: number) {
+    const waits = await db.payoutFundingWait.findMany({ where: { workspaceId, status: 'WAITING' }, orderBy: { createdAt: 'asc' } });
+    const funded: { batchId: string; requiredAmount: number }[] = [];
+    for (const wait of waits) {
+      if (readyToSend >= toNum(wait.requiredAmount)) {
+        await db.payoutFundingWait.update({
+          where: { id: wait.id },
+          data: { status: 'FUNDED', availableAmount: readyToSend, resolvedAt: new Date(), notifiedAt: new Date() },
+        });
+        funded.push({ batchId: wait.batchId, requiredAmount: toNum(wait.requiredAmount) });
+      }
+    }
+    return funded;
+  }
+
+  private async notifyFunded(workspaceId: string, funded: { batchId: string; requiredAmount: number }[]) {
+    const batches = await this.prisma.batch.findMany({ where: { id: { in: funded.map((f) => f.batchId) } }, select: { id: true, batchRef: true } });
+    const ref = new Map(batches.map((b) => [b.id, b.batchRef]));
+    for (const f of funded) {
+      await this.notifications
+        .notify(workspaceId, 'disbursement_result', {
+          title: `${ref.get(f.batchId) ?? 'Batch'}: wallet funded — ready to pay`,
+          body: `Your wallet now covers this batch (₦${f.requiredAmount.toLocaleString('en-NG')}). Open Batches to disburse.`,
+          url: `/app?tab=batches&batch=${f.batchId}`,
+        })
+        .catch((e) => this.logger.warn(`Funding notification failed: ${(e as Error).message}`));
+    }
+  }
+
+  private sweeping = false;
+
+  /**
+   * Funding watcher (port of Lovable's monnify-sweep; every 10 minutes). It moves no money. Per workspace it:
+   *  1. compares the ledger's available balance with the live Monnify wallet balance
+   *     (ready to pay = min of the two; clearing = ledger money Monnify has not released yet),
+   *  2. records the check in wallet_sweeps when anything changed (Lovable wrote a row every run; this keeps
+   *     the same history without 144 identical rows a day), `releasedAmount` being how much the live wallet
+   *     grew since the previous check,
+   *  3. marks WAITING shortfalls FUNDED once ready-to-pay covers them, and tells the team.
+   * An unreachable Monnify is recorded as "blocked" and never treated as a zero balance.
+   */
+  async runSweep() {
+    if (this.sweeping) return { skipped: true as const };
+    this.sweeping = true;
+    try {
+      const [wallets, waits] = await Promise.all([
+        this.prisma.workspace.findMany({ where: { monnifyReservedAccountNumber: { not: null } }, select: { id: true } }),
+        this.prisma.payoutFundingWait.findMany({ where: { status: 'WAITING' }, select: { workspaceId: true }, distinct: ['workspaceId'] }),
+      ]);
+      const ids = new Set([...wallets.map((w) => w.id), ...waits.map((w) => w.workspaceId)]);
+      const live = await this.monnifyService.getWalletBalance(); // one shared Monnify wallet, one call per run
+      const results: Array<{ workspaceId: string; status: string; readyToPay: number; clearing: number; released: number; notified: number }> = [];
+      for (const workspaceId of ids) {
+        try {
+          results.push(await this.sweepWorkspace(workspaceId, live));
+        } catch (error) {
+          this.logger.warn(`Sweep failed for workspace ${workspaceId}: ${(error as Error).message}`);
+        }
+      }
+      return { skipped: false as const, workspaces: results.length, notified: results.reduce((s, r) => s + r.notified, 0), results };
+    } finally {
+      this.sweeping = false;
+    }
+  }
+
+  async sweepWorkspace(workspaceId: string, live: { available: number | null; reason: string | null }) {
+    const ledgerAvailable = (await this.computeBalance(this.prisma, workspaceId)).balance;
+    const liveBalance = live.available;
+    const readyToPay = liveBalance == null ? ledgerAvailable : Math.max(0, Math.min(ledgerAvailable, liveBalance));
+    const clearing = liveBalance == null ? 0 : Math.max(0, round2(ledgerAvailable - liveBalance));
+    const status = live.reason ? 'blocked' : clearing > 0 ? 'clearing' : 'ok';
+
+    const prev = await this.prisma.walletSweep.findFirst({ where: { workspaceId }, orderBy: { createdAt: 'desc' } });
+    const prevLive = prev?.liveWalletBalance == null ? null : toNum(prev.liveWalletBalance);
+    const released = liveBalance != null && prevLive != null ? Math.max(0, round2(liveBalance - prevLive)) : 0;
+    const changed =
+      !prev ||
+      prev.status !== status ||
+      (prev.reason ?? null) !== (live.reason ?? null) ||
+      prevLive !== liveBalance ||
+      round2(toNum(prev.ledgerAvailable)) !== round2(ledgerAvailable) ||
+      round2(toNum(prev.clearing)) !== clearing;
+    if (changed) {
+      await this.prisma.walletSweep.create({
+        data: {
+          workspaceId,
+          liveWalletBalance: liveBalance,
+          ledgerAvailable,
+          clearing,
+          releasedAmount: released,
+          amount: released,
+          status,
+          reason: live.reason,
+          raw: { readyToPay },
+        },
+      });
+    }
+
+    const funded = await this.prisma.$transaction(async (tx) => {
+      await lockWallet(tx, workspaceId);
+      return this.fundWaits(tx, workspaceId, readyToPay);
+    });
+    if (funded.length) await this.notifyFunded(workspaceId, funded);
+    return { workspaceId, status, readyToPay, clearing, released, notified: funded.length };
+  }
+
+  /**
+   * "Reconcile top-ups": back-fills missed webhooks by listing recent transactions on the
+   * reserved account and recording any we don't have. Idempotent on the Monnify reference.
+   */
+  async reconcileTopups(workspaceId: string, actor: AuditActor) {
+    const workspace = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
+    if (!workspace?.monnifyReservedAccountRef) {
+      throw new BadRequestException('No wallet account is linked to this workspace yet');
+    }
+    const { checked, added, addedAmount } = await this.syncTopups(workspaceId, workspace.monnifyReservedAccountRef);
+    const txs = { length: checked };
     await this.audit.record(workspaceId, actor, AUDIT_ACTIONS.WALLET_TOPUPS_RECONCILED, workspace.monnifyReservedAccountNumber, {
       checked: txs.length,
       added,

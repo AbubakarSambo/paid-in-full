@@ -473,6 +473,95 @@ export class MonnifyService {
     });
   }
 
+  /**
+   * Live balance of the Monnify disbursement wallet (GET /api/v2/disbursements/wallet-balance).
+   * `available: null` means "unknown" (unreachable / not configured), never zero.
+   */
+  async getWalletBalance(): Promise<{ available: number | null; reason: string | null }> {
+    if (this.isMockMode) return { available: null, reason: null };
+    if (!this.sourceAccountNumber) return { available: null, reason: 'MONNIFY_SOURCE_ACCOUNT_NUMBER is not set' };
+    try {
+      const res = await this.authedRequest<{ responseBody?: { availableBalance?: number | string; walletBalance?: number | string } }>(
+        `/api/v2/disbursements/wallet-balance?accountNumber=${encodeURIComponent(this.sourceAccountNumber)}`,
+        'GET',
+      );
+      const n = Number(res.responseBody?.availableBalance ?? res.responseBody?.walletBalance);
+      return Number.isFinite(n) ? { available: n, reason: null } : { available: null, reason: 'Monnify returned no wallet balance' };
+    } catch (error) {
+      return { available: null, reason: (error as Error).message };
+    }
+  }
+
+  /**
+   * Replays PAID transactions on one reserved account through the same path a webhook takes (invoicing /
+   * mandate hooks first, then billing or wallet). Listing them from Monnify's API is authoritative, so no
+   * further verification is needed. Every handler is idempotent on the transaction reference.
+   */
+  async replayAccountCollections(accountReference: string): Promise<{ checked: number }> {
+    const txs = await this.listReservedAccountTransactions(accountReference);
+    for (const t of txs) {
+      if (t.status !== 'PAID' || !(t.amount > 0)) continue;
+      const claimed = await runMonnifyCollectionHooks({
+        eventType: 'SUCCESSFUL_TRANSACTION',
+        data: {
+          transactionReference: t.reference,
+          paymentReference: t.reference,
+          amountPaid: t.amount,
+          paidOn: t.paidAt?.toISOString(),
+          product: { type: 'RESERVED_ACCOUNT', reference: accountReference },
+          paymentSourceInformation: [{ accountName: t.payerName, accountNumber: t.payerAccountNumber }],
+        },
+      });
+      if (claimed) continue;
+      await this.handleCollectionResult({
+        transactionReference: t.reference,
+        amount: t.amount,
+        accountReference,
+        payerName: t.payerName ?? undefined,
+        payerAccountNumber: t.payerAccountNumber ?? undefined,
+        payerBank: t.payerBank ?? undefined,
+        paidAt: t.paidAt,
+      });
+    }
+    return { checked: txs.length };
+  }
+
+  private pollingCollections = false;
+
+  /**
+   * Safety net (Lovable monnify-poll, beyond the wallet): invoice collection accounts of open invoices and
+   * each workspace's own subscription-billing account. Skipped in mock mode.
+   */
+  async pollCollectionAccounts() {
+    if (this.isMockMode || this.pollingCollections) return { skipped: true as const };
+    this.pollingCollections = true;
+    const tally = { accounts: 0, checked: 0, errors: 0, skipped: false as const };
+    try {
+      const [invoices, billing] = await Promise.all([
+        this.prisma.invoice.findMany({
+          where: { docType: 'INVOICE', status: { in: ['DRAFT', 'SENT', 'PARTIALLY_PAID', 'OVERDUE'] }, collectionAccountRef: { not: null } },
+          select: { collectionAccountRef: true },
+        }),
+        this.prisma.workspace.findMany({ where: { billingAccountRef: { not: null }, status: { not: 'DEAD' } }, select: { billingAccountRef: true } }),
+      ]);
+      const refs = new Set<string>([...invoices.map((i) => i.collectionAccountRef!), ...billing.map((w) => w.billingAccountRef!)]);
+      for (const ref of refs) {
+        try {
+          const r = await this.replayAccountCollections(ref);
+          tally.accounts++;
+          tally.checked += r.checked;
+        } catch (error) {
+          tally.errors++;
+          this.logger.warn(`Collection poll failed for ${ref}: ${(error as Error).message}`);
+        }
+      }
+      if (tally.errors) this.logger.log(`Collection poll: ${JSON.stringify(tally)}`);
+    } finally {
+      this.pollingCollections = false;
+    }
+    return tally;
+  }
+
   /** GET /api/v2/transactions/{transactionReference}: authoritative check of a collection. */
   async getCollectionStatus(transactionReference: string): Promise<{ paid: boolean; amount: number } | null> {
     if (this.isMockMode) return null;

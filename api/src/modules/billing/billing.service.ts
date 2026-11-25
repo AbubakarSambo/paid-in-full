@@ -506,6 +506,10 @@ export class BillingService {
 
   @Cron('0 7 * * *')
   async runDailyBillingSweep() {
+    // Off unless explicitly enabled: card auto-charge is best-effort/unconfirmed here, and the production
+    // product collects subscriptions by bank transfer (Lovable never attempted a card charge). Enabling
+    // it on the imported customers would start charging/dunning real workspaces.
+    if (process.env.BILLING_AUTO_CHARGE !== 'true') return;
     const now = new Date();
     this.logger.log('Running daily subscription billing sweep');
 
