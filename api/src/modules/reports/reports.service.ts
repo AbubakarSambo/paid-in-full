@@ -261,9 +261,11 @@ export class ReportsService {
       c.total += total;
       cats.set(category, c);
 
-      const v = vendors.get(l.vendorId) ?? {
-        key: l.vendorId,
-        vendorId: l.vendorId,
+      // Lines imported without a vendor (deleted in the old system) group by their snapshot name.
+      const vKey = l.vendorId ?? `name:${l.vendorName}`;
+      const v = vendors.get(vKey) ?? {
+        key: vKey,
+        vendorId: l.vendorId ?? '',
         label: l.vendor?.name || l.vendorName,
         items: 0,
         paid: 0,
@@ -273,7 +275,7 @@ export class ReportsService {
       v.items += 1;
       v.paid += paid;
       v.total += total;
-      vendors.set(l.vendorId, v);
+      vendors.set(vKey, v);
 
       const buKey = l.costCenterId ?? '__unassigned__';
       const b = bus.get(buKey) ?? {
@@ -373,13 +375,13 @@ export class ReportsService {
       const isPaid = l.payoutStatus === 'SUCCESS' || lineOutstanding(total, num(l.paidAmount)) === 0;
       if (!isPaid) continue;
       const tin = l.vendor?.tin?.trim() || null;
-      if (!tin) missingTin.set(l.vendorId, l.vendor?.name || l.vendorName);
+      if (!tin) missingTin.set(l.vendorId ?? `name:${l.vendorName}`, l.vendor?.name || l.vendorName);
       contract += total;
       whtSum += wht;
       out.push({
         batchItemId: l.id,
         date: ymd(l.date),
-        vendorId: l.vendorId,
+        vendorId: l.vendorId ?? '',
         vendor: l.vendor?.name || l.vendorName,
         tin,
         contractAmount: total,
@@ -607,7 +609,7 @@ export class ReportsService {
       }),
     ]);
 
-    const vendorIds = new Set<string>([...lines.map((l) => l.vendorId), ...queue.map((q) => q.vendorId)]);
+    const vendorIds = new Set<string>([...lines.map((l) => l.vendorId).filter((v): v is string => !!v), ...queue.map((q) => q.vendorId)]);
     const vendorNames = new Map(
       (
         await this.prisma.vendor.findMany({
@@ -622,7 +624,7 @@ export class ReportsService {
       let r = rows.get(vendorId);
       if (!r) {
         r = {
-          vendorId,
+          vendorId: vendorId.startsWith('name:') ? '' : vendorId,
           vendor: vendorNames.get(vendorId) ?? fallbackName ?? 'Unknown vendor',
           lines: 0,
           oldestItem: null,
@@ -651,7 +653,7 @@ export class ReportsService {
       }
       const owed = lineOutstanding(total, paid);
       if (owed <= 0) continue;
-      const r = row(l.vendorId, l.vendorName);
+      const r = row(l.vendorId ?? `name:${l.vendorName}`, l.vendorName);
       r.lines += 1;
       r.postedUnpaid += owed;
       touch(r, l.date);

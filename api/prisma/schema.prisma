@@ -301,6 +301,18 @@ model Workspace {
   appConfig             AppConfig[]
   idempotencyKeys       IdempotencyKey[]
 
+  // Lovable migration additions
+  sessionTimeoutMinutes        Int                   @default(60) @map("session_timeout_minutes")
+  requireReauthForDisbursement Boolean               @default(false) @map("require_reauth_for_disbursement")
+  createdById                  String?               @map("created_by_id")
+  signatureUrl                 String?               @map("signature_url")
+  themeColor                   String?               @map("theme_color")
+  invoiceFooter                String?               @map("invoice_footer")
+  payoutNarrationName          String?               @map("payout_narration_name")
+  procurementApprovers         ProcurementApprover[]
+  requisitionApprovals         RequisitionApproval[]
+  goodsReceipts                GoodsReceipt[]
+
   @@map("workspaces")
 }
 
@@ -343,19 +355,22 @@ model User {
   pushSubscriptions       PushSubscription[]
   auditLogs               AuditLog[]
 
+  procurementApprovals      ProcurementApprover[]
+  requisitionApprovalsGiven RequisitionApproval[] @relation("RequisitionApprovalApprover")
+
   @@map("users")
 }
 
 model EmailVerificationToken {
-  id        String    @id @default(uuid())
-  userId    String    @map("user_id")
-  token     String    @unique
-  type      String // EMAIL_VERIFY | PASSWORD_RESET | MAGIC_LINK | INVITE
+  id          String    @id @default(uuid())
+  userId      String    @map("user_id")
+  token       String    @unique
+  type        String // EMAIL_VERIFY | PASSWORD_RESET | MAGIC_LINK | INVITE
   /// INVITE tokens: the workspace the invite is for.
-  workspaceId String? @map("workspace_id")
-  expiresAt DateTime  @map("expires_at")
-  usedAt    DateTime? @map("used_at")
-  createdAt DateTime  @default(now()) @map("created_at")
+  workspaceId String?   @map("workspace_id")
+  expiresAt   DateTime  @map("expires_at")
+  usedAt      DateTime? @map("used_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -470,6 +485,10 @@ model Vendor {
   stockExpenses     StockExpense[]
   recurringPayments RecurringPayment[]
 
+  // Lovable migration additions
+  notifyChannel String  @default("whatsapp") @map("notify_channel")
+  notifyOptIn   Boolean @default(true) @map("notify_opt_in")
+
   @@unique([workspaceId, name])
   @@index([workspaceId])
   @@map("vendors")
@@ -491,6 +510,11 @@ model CostCenter {
   batchItems        BatchItem[]
   budgets           Budget[]
   recurringPayments RecurringPayment[]
+
+  // Lovable migration additions
+  color        String?
+  hasLocations Boolean  @default(false) @map("has_locations")
+  createdAt    DateTime @default(now()) @map("created_at")
 
   @@unique([workspaceId, name])
   @@map("cost_centers")
@@ -527,6 +551,11 @@ model Location {
   batchItems        BatchItem[]
   recurringPayments RecurringPayment[]
 
+  // Lovable migration additions
+  code      String?
+  color     String?
+  createdAt DateTime @default(now()) @map("created_at")
+
   @@unique([workspaceId, costCenterId, name])
   @@index([costCenterId])
   @@map("locations")
@@ -551,6 +580,9 @@ model PayCategory {
   batchItems        BatchItem[]
   stockExpenses     StockExpense[]
   recurringPayments RecurringPayment[]
+
+  // Lovable migration additions
+  createdAt DateTime @default(now()) @map("created_at")
 
   @@unique([workspaceId, name])
   @@map("pay_categories")
@@ -597,6 +629,10 @@ model Budget {
   workspace  Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   coaTag     CoaTag      @relation(fields: [coaTagId], references: [id], onDelete: Cascade)
   costCenter CostCenter? @relation(fields: [costCenterId], references: [id], onDelete: Cascade)
+
+  // Lovable migration additions
+  payCategoryId String? @map("pay_category_id")
+  locationId    String? @map("location_id")
 
   @@unique([workspaceId, periodMonth, costCenterId, coaTagId])
   @@index([workspaceId, periodMonth])
@@ -686,6 +722,16 @@ model Requisition {
   location    Location?    @relation(fields: [locationId], references: [id], onDelete: SetNull)
   queueItem   QueueItem?
 
+  // Lovable migration additions
+  hodName           String?               @map("hod_name")
+  staffAccountNote  String?               @map("staff_account_note")
+  pnlPeriod         String?               @map("pnl_period")
+  finalApprovedById String?               @map("final_approved_by_id")
+  finalApprovedAt   DateTime?             @map("final_approved_at")
+  approvalRound     Int                   @default(0) @map("approval_round")
+  approvals         RequisitionApproval[]
+  goodsReceipt      GoodsReceipt?
+
   @@unique([workspaceId, reqRef])
   @@index([workspaceId, status])
   @@index([workspaceId, bundleId])
@@ -754,6 +800,9 @@ model QueueItem {
   attachments QueueItemAttachment[]
   comments    QueueItemComment[]
   batchItems  BatchItem[]
+
+  // Lovable migration additions
+  budgetTag String? @map("budget_tag")
 
   @@index([workspaceId, status])
   @@index([workspaceId, bundleId])
@@ -866,6 +915,9 @@ model Batch {
   payoutFundingWaits  PayoutFundingWait[]
   settlementBatch     SettlementBatch?
 
+  // Lovable migration additions
+  payoutBatchReference String? @map("payout_batch_reference")
+
   @@unique([workspaceId, batchRef])
   @@index([workspaceId, payoutStatus])
   @@map("batches")
@@ -878,7 +930,7 @@ model BatchItem {
   batchId         String                @map("batch_id")
   queueItemId     String?               @map("queue_item_id") // null for manual entries; split lines share it
   date            DateTime              @default(now()) @db.Date
-  vendorId        String                @map("vendor_id")
+  vendorId        String?               @map("vendor_id")
   vendorName      String                @map("vendor_name")
   vendorBank      String?               @map("vendor_bank")
   vendorBankCode  String?               @map("vendor_bank_code")
@@ -917,13 +969,27 @@ model BatchItem {
 
   batch       Batch             @relation(fields: [batchId], references: [id], onDelete: Cascade)
   queueItem   QueueItem?        @relation(fields: [queueItemId], references: [id], onDelete: SetNull)
-  vendor      Vendor            @relation(fields: [vendorId], references: [id])
+  vendor      Vendor?           @relation(fields: [vendorId], references: [id], onDelete: SetNull)
   payCategory PayCategory?      @relation(fields: [payCategoryId], references: [id], onDelete: SetNull)
   coaTagRef   CoaTag?           @relation(fields: [coaTagId], references: [id], onDelete: SetNull)
   costCenter  CostCenter?       @relation(fields: [costCenterId], references: [id], onDelete: SetNull)
   location    Location?         @relation(fields: [locationId], references: [id], onDelete: SetNull)
   payouts     BatchItemPayout[]
   whtLedger   WhtLedger[]
+
+  // Lovable migration additions
+  /// vendor_id as it was in Lovable when that vendor no longer exists (935 rows); vendorId is nulled, this keeps the trail.
+  legacyVendorId    String?   @map("legacy_vendor_id")
+  legacyStatus      String?   @map("legacy_status")
+  attachmentGroupId String?   @map("attachment_group_id")
+  requisitionId     String?   @map("requisition_id")
+  queuedAt          DateTime? @map("queued_at")
+  approvedById      String?   @map("approved_by_id")
+  approvedAt        DateTime? @map("approved_at")
+  paidById          String?   @map("paid_by_id")
+  payStartedAt      DateTime? @map("pay_started_at")
+  paidAt            DateTime? @map("paid_at")
+  createdById       String?   @map("created_by_id")
 
   @@index([batchId])
   @@index([queueItemId])
@@ -963,6 +1029,10 @@ model BatchItemPayout {
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   batchItem BatchItem @relation(fields: [batchItemId], references: [id], onDelete: Cascade)
 
+  // Lovable migration additions
+  message       String?
+  payoutGroupId String? @map("payout_group_id")
+
   @@index([batchItemId])
   @@index([workspaceId, status])
   @@index([transferReference])
@@ -994,6 +1064,11 @@ model WalletLedgerEntry {
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   batch     Batch?    @relation(fields: [batchId], references: [id], onDelete: SetNull)
 
+  // Lovable migration additions
+  /// Lovable wallet_ledger_entries.source_key: globally unique idempotency key for every posting.
+  sourceKey String? @unique @map("source_key")
+  metadata  Json?
+
   @@index([workspaceId, createdAt])
   @@index([workspaceId, reference])
   @@map("wallet_ledger_entries")
@@ -1016,6 +1091,9 @@ model WalletTopup {
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
+  // Lovable migration additions
+  rawPayload Json? @map("raw_payload")
+
   @@index([workspaceId, createdAt])
   @@map("wallet_topups")
 }
@@ -1023,8 +1101,16 @@ model WalletTopup {
 model WalletSweep {
   id                  String    @id @default(uuid())
   workspaceId         String    @map("workspace_id")
-  amount              Decimal   @db.Decimal(14, 2)
-  monnifyReference    String    @unique @map("monnify_reference")
+  /// Amount released from clearing in this check (Lovable released_amount).
+  amount              Decimal   @default(0) @db.Decimal(14, 2)
+  releasedAmount      Decimal   @default(0) @map("released_amount") @db.Decimal(14, 2)
+  liveWalletBalance   Decimal?  @map("live_wallet_balance") @db.Decimal(14, 2)
+  ledgerAvailable     Decimal   @default(0) @map("ledger_available") @db.Decimal(14, 2)
+  clearing            Decimal   @default(0) @db.Decimal(14, 2)
+  status              String    @default("ok") // ok | clearing | blocked
+  reason              String?
+  raw                 Json?
+  monnifyReference    String?   @unique @map("monnify_reference")
   sourceAccountNumber String?   @map("source_account_number")
   sourceAccountName   String?   @map("source_account_name")
   matchedAt           DateTime? @map("matched_at")
@@ -1033,6 +1119,7 @@ model WalletSweep {
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
+  @@index([workspaceId, createdAt])
   @@map("wallet_sweeps")
 }
 
@@ -1049,6 +1136,10 @@ model PayoutFundingWait {
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   batch     Batch     @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  // Lovable migration additions
+  readyAtBlock Decimal   @default(0) @map("ready_at_block") @db.Decimal(14, 2)
+  notifiedAt   DateTime? @map("notified_at")
 
   @@map("payout_funding_waits")
 }
@@ -1076,7 +1167,7 @@ model WhtLedger {
   id          String    @id @default(uuid())
   workspaceId String    @map("workspace_id")
   batchItemId String    @map("batch_item_id")
-  vendorId    String    @map("vendor_id")
+  vendorId    String?   @map("vendor_id")
   grossAmount Decimal   @map("gross_amount") @db.Decimal(14, 2)
   whtRate     Decimal   @map("wht_rate") @db.Decimal(6, 4) // fraction 0–1
   whtAmount   Decimal   @map("wht_amount") @db.Decimal(14, 2)
@@ -1088,7 +1179,16 @@ model WhtLedger {
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   batchItem BatchItem @relation(fields: [batchItemId], references: [id], onDelete: Cascade)
-  vendor    Vendor    @relation(fields: [vendorId], references: [id])
+  vendor    Vendor?   @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+
+  // Lovable migration additions
+  payoutGroupId         String?  @unique @map("payout_group_id")
+  vendorName            String?  @map("vendor_name")
+  coa                   String?
+  netAmount             Decimal? @map("net_amount") @db.Decimal(14, 2)
+  vendorPayoutReference String?  @map("vendor_payout_reference")
+  whtPayoutReference    String?  @map("wht_payout_reference")
+  remitStatus           String   @default("pending") @map("remit_status")
 
   @@index([workspaceId, taxPeriod])
   @@index([batchItemId])
@@ -1139,6 +1239,10 @@ model CustomerCredit {
   appliedToInvoice Invoice?  @relation("CreditAppliedTo", fields: [appliedToInvoiceId], references: [id], onDelete: SetNull)
   sourceInvoice    Invoice?  @relation("CreditSource", fields: [sourceInvoiceId], references: [id], onDelete: SetNull)
 
+  // Lovable migration additions
+  currency    String  @default("NGN")
+  createdById String? @map("created_by_id")
+
   @@index([workspaceId, customerId])
   @@map("customer_credits")
 }
@@ -1174,6 +1278,10 @@ model InvoiceTemplateItem {
 
   template InvoiceTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
   product  Product?        @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  // Lovable migration additions
+  discountType  DiscountType? @map("discount_type")
+  discountValue Decimal?      @map("discount_value") @db.Decimal(14, 2)
 
   @@map("invoice_template_items")
 }
@@ -1245,6 +1353,16 @@ model Invoice {
   creditsApplied     CustomerCredit[]   @relation("CreditAppliedTo")
   creditsCreated     CustomerCredit[]   @relation("CreditSource")
 
+  // Lovable migration additions
+  taxRate                 Decimal   @default(0) @map("tax_rate") @db.Decimal(9, 4)
+  taxAmount               Decimal   @default(0) @map("tax_amount") @db.Decimal(14, 2)
+  paidAt                  DateTime? @map("paid_at")
+  collectionProvisionedAt DateTime? @map("collection_provisioned_at")
+  shareTokenCreatedAt     DateTime? @map("share_token_created_at")
+  convertedAt             DateTime? @map("converted_at")
+  fxLockedAt              DateTime? @map("fx_locked_at")
+  ccEmails                String[]  @default([]) @map("cc_emails")
+
   @@unique([workspaceId, invoiceNumber])
   @@unique([workspaceId, quoteNumber])
   @@index([workspaceId, status])
@@ -1265,6 +1383,14 @@ model InvoiceItem {
 
   invoice Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  // Lovable migration additions
+  vatAmount      Decimal       @default(0) @map("vat_amount") @db.Decimal(18, 2)
+  whtAmount      Decimal       @default(0) @map("wht_amount") @db.Decimal(18, 2)
+  discountType   DiscountType? @map("discount_type")
+  discountValue  Decimal       @default(0) @map("discount_value") @db.Decimal(18, 2)
+  discountAmount Decimal       @default(0) @map("discount_amount") @db.Decimal(18, 2)
+  taxInclusive   Boolean       @default(false) @map("tax_inclusive")
 
   @@map("invoice_items")
 }
@@ -1340,6 +1466,13 @@ model InvoiceSend {
 
   invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 
+  // Lovable migration additions
+  status            String  @default("sent")
+  message           String?
+  error             String?
+  providerMessageId String? @map("provider_message_id")
+  sentById          String? @map("sent_by_id")
+
   @@map("invoice_sends")
 }
 
@@ -1405,6 +1538,17 @@ model BillingPlan {
 
   subscriptions WorkspaceSubscription[]
 
+  // Lovable migration additions
+  code                String?  @unique
+  productType         String?  @map("product_type") // managed | standalone
+  description         String?
+  currency            String   @default("NGN")
+  setupFee            Decimal  @default(0) @map("setup_fee") @db.Decimal(14, 2)
+  prepayMonths        Int?     @map("prepay_months")
+  prepayMonthlyAmount Decimal? @map("prepay_monthly_amount") @db.Decimal(14, 2)
+  isActive            Boolean  @default(true) @map("is_active")
+  sortOrder           Int      @default(0) @map("sort_order")
+
   @@map("billing_plans")
 }
 
@@ -1423,6 +1567,15 @@ model WorkspaceSubscription {
   payments       BillingPayment[]
   chargeAttempts SubscriptionChargeAttempt[]
   dunningState   SubscriptionDunningState?
+
+  // Lovable migration additions
+  currency       String    @default("NGN")
+  prepayMonths   Int?      @map("prepay_months")
+  graceUntil     DateTime? @map("grace_until") @db.Date
+  setupFeePaidAt DateTime? @map("setup_fee_paid_at")
+  trialGranted   Boolean   @default(false) @map("trial_granted")
+  /// Lovable workspace_subscriptions.client_status (trial | active | suspended ...)
+  clientStatus   String?   @map("client_status")
 
   @@map("workspace_subscriptions")
 }
@@ -1495,6 +1648,12 @@ model CustomerSubscription {
   workspace Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   customer  Customer                     @relation(fields: [customerId], references: [id], onDelete: Cascade)
   charges   CustomerSubscriptionCharge[]
+
+  // Lovable migration additions
+  currency    String    @default("NGN")
+  billingDay  Int?      @map("billing_day")
+  startDate   DateTime? @map("start_date") @db.Date
+  createdById String?   @map("created_by_id")
 
   @@index([workspaceId])
   @@map("customer_subscriptions")
@@ -1587,6 +1746,11 @@ model EmailSendLog {
   status    String // SENT | FAILED | BOUNCED
   createdAt DateTime @default(now()) @map("created_at")
 
+  // Lovable migration additions
+  messageId    String? @map("message_id")
+  errorMessage String? @map("error_message")
+  metadata     Json?
+
   @@map("email_send_log")
 }
 
@@ -1615,6 +1779,9 @@ model SuppressedEmail {
   reason    String // BOUNCE | COMPLAINT | UNSUBSCRIBE
   createdAt DateTime @default(now()) @map("created_at")
 
+  // Lovable migration additions
+  metadata Json?
+
   @@map("suppressed_emails")
 }
 
@@ -1632,6 +1799,9 @@ model AppConfig {
   updatedById String?  @map("updated_by_id")
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  // Lovable migration additions
+  isSensitive Boolean @default(true) @map("is_sensitive")
 
   @@id([workspaceId, key])
   @@map("app_config")
@@ -1676,6 +1846,14 @@ model ClientError {
   userAgent String?  @map("user_agent")
   createdAt DateTime @default(now()) @map("created_at")
 
+  // Lovable migration additions
+  source      String?
+  workspaceId String? @map("workspace_id")
+  userId      String? @map("user_id")
+  userEmail   String? @map("user_email")
+  severity    String  @default("error")
+  metadata    Json?
+
   @@map("client_errors")
 }
 
@@ -1692,4 +1870,67 @@ model IdempotencyKey {
 
   @@unique([workspaceId, action, key])
   @@map("idempotency_keys")
+}
+
+// ─── Procurement approvals (Lovable tables with no earlier Prisma model) ───────────────────
+
+/// Who may approve requisitions in a role (accountant | procurement_head | general_manager).
+model ProcurementApprover {
+  id           String   @id @default(uuid())
+  workspaceId  String   @map("workspace_id")
+  userId       String   @map("user_id")
+  approvalRole String   @map("approval_role")
+  /// Lovable procurement_approvers.is_backup: a standby approver used when the primary is unavailable.
+  isBackup     Boolean  @default(false) @map("is_backup")
+  createdById  String?  @map("created_by_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId, approvalRole])
+  @@map("procurement_approvers")
+}
+
+/// One approval by one approver in one approval round of a requisition.
+model RequisitionApproval {
+  id             String   @id @default(uuid())
+  workspaceId    String   @map("workspace_id")
+  requisitionId  String   @map("requisition_id")
+  approvalRound  Int      @default(0) @map("approval_round")
+  approverUserId String   @map("approver_user_id")
+  approvalRole   String   @map("approval_role")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  workspace   Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  requisition Requisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  approver    User        @relation("RequisitionApprovalApprover", fields: [approverUserId], references: [id], onDelete: Cascade)
+
+  @@unique([requisitionId, approvalRound, approvalRole])
+  @@unique([requisitionId, approvalRound, approverUserId])
+  @@index([workspaceId])
+  @@map("requisition_approvals")
+}
+
+/// Goods-received / work-completion confirmation, signed twice (first and second signatory).
+model GoodsReceipt {
+  id            String    @id @default(uuid())
+  workspaceId   String    @map("workspace_id")
+  requisitionId String    @unique @map("requisition_id")
+  kind          String
+  receivedQty   Decimal?  @map("received_qty") @db.Decimal(14, 3)
+  condition     String?
+  notes         String?
+  firstById     String?   @map("first_by_id")
+  firstAt       DateTime? @map("first_at")
+  secondById    String?   @map("second_by_id")
+  secondAt      DateTime? @map("second_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  workspace   Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  requisition Requisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("goods_receipts")
 }

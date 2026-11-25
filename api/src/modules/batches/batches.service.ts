@@ -328,6 +328,12 @@ export class BatchesService {
    * copy is created per line so split parts that were already paid stay accounted for.
    */
   private async requeue(tx: Prisma.TransactionClient, lines: BatchItem[]): Promise<string[]> {
+    // Lines imported from the old system can have no vendor (the vendor was deleted there). The queue
+    // needs a vendor to pay, so the user must pick one first; refuse rather than invent one.
+    const noVendor = lines.find((l) => !l.vendorId);
+    if (noVendor) {
+      throw new BadRequestException(`"${noVendor.vendorName}" is no longer in your vendor list — add the vendor again before returning this line to the queue`);
+    }
     const byQ = new Map<string, BatchItem[]>();
     for (const l of lines) if (l.queueItemId) byQ.set(l.queueItemId, [...(byQ.get(l.queueItemId) ?? []), l]);
     const ids: string[] = [];
@@ -354,7 +360,7 @@ export class BatchesService {
               units: first.units,
               unitAmount: first.unitAmount,
             }),
-            vendorId: first.vendorId,
+            vendorId: first.vendorId!, // guarded above
             vendorName: first.vendorName,
             coaTagId: first.coaTagId,
             coaTag: first.coaTag,
@@ -373,7 +379,7 @@ export class BatchesService {
             data: {
               workspaceId: q.workspaceId,
               date: l.date,
-              vendorId: l.vendorId,
+              vendorId: l.vendorId!, // guarded above
               vendorName: l.vendorName,
               description: l.description,
               units: l.units,

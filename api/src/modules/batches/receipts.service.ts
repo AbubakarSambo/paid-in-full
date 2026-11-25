@@ -158,7 +158,7 @@ export class ReceiptsService {
     if (!item) throw new NotFoundException('Batch line not found');
     const row = this.rowOf(item);
     if (!row) throw new NotFoundException('Nothing has been paid on this line yet');
-    const vendor = await this.prisma.vendor.findUnique({ where: { id: item.vendorId }, select: { phone: true, contactPerson: true } });
+    const vendor = item.vendorId ? await this.prisma.vendor.findUnique({ where: { id: item.vendorId }, select: { phone: true, contactPerson: true } }) : null;
     const naira = (n: number) => `₦${n.toLocaleString('en-NG', { maximumFractionDigits: 2 })}`;
     const text = [
       `Hello ${vendor?.contactPerson || item.vendorName},`,
