@@ -626,8 +626,8 @@ export class DisbursementService {
     return tally;
   }
 
-  /** Automatic background recovery (spec §8): resolve legs that have been in flight > 2 minutes. */
-  @Cron(CronExpression.EVERY_5_MINUTES)
+  /** Automatic background recovery (spec §8): resolve legs that have been in flight > 2 minutes. Every minute, like Lovable's monnify-payout-recovery. */
+  @Cron(CronExpression.EVERY_MINUTE)
   async recoverInFlight() {
     if (this.recovering) return;
     this.recovering = true;
