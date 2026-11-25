@@ -46,3 +46,35 @@ export function addPeriod(from: Date, period: '30d' | '90d' | '1y'): Date {
   else d.setDate(d.getDate() + (period === '30d' ? 30 : 90));
   return d;
 }
+
+export interface PifCoverageInput {
+  amount: number;
+  /** Plan terms; null when the workspace has no plan row. */
+  plan: { monthly: number; setupFee: number; prepayMonths: number; prepayMonthly: number } | null;
+  setupFeePaid: boolean;
+  /** Used when there is no plan (the workspace's own monthly amount, else the amount itself). */
+  fallbackMonthly: number;
+}
+
+/**
+ * How many months a subscription payment buys, ported from Lovable's billing-collection rules:
+ * a payment first covers an unpaid setup fee (when it is large enough), the remainder buys the prepay
+ * bundle if it reaches `prepayMonthly * prepayMonths`, otherwise whole months at the plan's monthly price
+ * (at least one).
+ */
+export function pifPaymentCoverage(i: PifCoverageInput) {
+  const monthly = i.plan ? i.plan.monthly : i.fallbackMonthly;
+  let remaining = i.amount;
+  let coversSetup = false;
+  if (i.plan && i.plan.setupFee > 0 && !i.setupFeePaid && i.amount >= i.plan.setupFee) {
+    coversSetup = true;
+    remaining = i.amount - i.plan.setupFee;
+  }
+  let months = 1;
+  if (i.plan && i.plan.prepayMonths > 0 && i.plan.prepayMonthly > 0 && remaining >= i.plan.prepayMonthly * i.plan.prepayMonths) {
+    months = i.plan.prepayMonths;
+  } else if (monthly > 0) {
+    months = Math.max(1, Math.floor(remaining / monthly));
+  }
+  return { months, coversSetup };
+}

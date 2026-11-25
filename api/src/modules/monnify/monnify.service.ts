@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, Logger, ServiceUnavailableException, UnauthorizedException, forwardRef } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger, ServiceUnavailableException, UnauthorizedException, UnprocessableEntityException, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
 import { createHash, createHmac, timingSafeEqual } from 'crypto';
@@ -451,6 +451,7 @@ export class MonnifyService {
           paymentReference?: string;
           amount?: number;
           amountPaid?: number;
+          settlementAmount?: number;
           paymentStatus?: string;
           completedOn?: string;
           paidOn?: string;
@@ -464,6 +465,7 @@ export class MonnifyService {
       return {
         reference: t.transactionReference,
         amount: Number(t.amountPaid ?? t.amount ?? 0),
+        settlementAmount: t.settlementAmount != null ? Number(t.settlementAmount) : null,
         status: (t.paymentStatus ?? '').toUpperCase(),
         paidAt: t.completedOn || t.paidOn ? new Date((t.completedOn || t.paidOn) as string) : null,
         payerName: src?.accountName ?? t.customerDTO?.name ?? null,
@@ -515,7 +517,7 @@ export class MonnifyService {
       if (claimed) continue;
       await this.handleCollectionResult({
         transactionReference: t.reference,
-        amount: t.amount,
+        amount: t.settlementAmount ?? t.amount,
         accountReference,
         payerName: t.payerName ?? undefined,
         payerAccountNumber: t.payerAccountNumber ?? undefined,
@@ -563,16 +565,17 @@ export class MonnifyService {
   }
 
   /** GET /api/v2/transactions/{transactionReference}: authoritative check of a collection. */
-  async getCollectionStatus(transactionReference: string): Promise<{ paid: boolean; amount: number } | null> {
+  async getCollectionStatus(transactionReference: string): Promise<{ paid: boolean; amount: number; settlementAmount?: number } | null> {
     if (this.isMockMode) return null;
     try {
-      const result = await this.authedRequest<{ responseBody: { paymentStatus?: string; amountPaid?: number } }>(
+      const result = await this.authedRequest<{ responseBody: { paymentStatus?: string; amountPaid?: number; settlementAmount?: number } }>(
         `/api/v2/transactions/${encodeURIComponent(transactionReference)}`,
         'GET',
       );
       return {
         paid: (result.responseBody?.paymentStatus ?? '').toUpperCase() === 'PAID',
         amount: Number(result.responseBody?.amountPaid ?? 0),
+        settlementAmount: result.responseBody?.settlementAmount != null ? Number(result.responseBody.settlementAmount) : undefined,
       };
     } catch (error) {
       if (error instanceof MonnifyRequestError && error.httpStatus === 404) return { paid: false, amount: 0 };
@@ -683,6 +686,8 @@ export class MonnifyService {
     if (eventType.includes('TRANSACTION') || eventType.includes('COLLECTION')) {
       const transactionReference: string | undefined = data.transactionReference;
       const paymentReference: string | undefined = data.paymentReference;
+      // Gross = what the payer sent (invoices are settled against this). Credit = what actually lands in the
+      // Monnify wallet after fees (settlementAmount); the wallet ledger is credited with this, as Lovable did.
       const amount = Number(data.amountPaid ?? data.amount ?? 0);
       const paymentStatus = String(data.paymentStatus ?? 'PAID').toUpperCase();
       if ((!transactionReference && !paymentReference) || !(amount > 0)) {
@@ -692,6 +697,7 @@ export class MonnifyService {
       if (paymentStatus !== 'PAID' && paymentStatus !== 'OVERPAID') return { received: true, handled: 'IGNORED_UNPAID' };
 
       let confirmedAmount = amount;
+      let creditAmount = Number(data.settlementAmount ?? amount);
       if (!trusted) {
         const check = await this.getCollectionStatus(transactionReference ?? paymentReference!).catch((e) => {
           throw new ServiceUnavailableException(`Could not verify collection with Monnify: ${(e as Error).message}`);
@@ -701,6 +707,7 @@ export class MonnifyService {
           return { received: true, handled: 'UNVERIFIED' };
         }
         confirmedAmount = check.amount || amount;
+        creditAmount = check.settlementAmount ?? confirmedAmount;
       }
       // Invoicing hook (invoices module): per-invoice collection accounts and client-mandate
       // verifications/charges. Runs after verification; claimed events skip wallet handling.
@@ -711,8 +718,9 @@ export class MonnifyService {
       await this.handleCollectionResult({
         transactionReference,
         paymentReference,
-        amount: confirmedAmount,
+        amount: creditAmount,
         accountReference: data.product?.reference ?? data.accountReference,
+        accountNumber: data.destinationAccountInformation?.accountNumber ?? data.destinationAccountNumber,
         payerName: src?.accountName ?? data.customer?.name ?? data.sourceAccountName,
         payerAccountNumber: src?.accountNumber ?? data.sourceAccountNumber,
         payerBank: bankNameOf(src?.bankCode),
@@ -753,6 +761,8 @@ export class MonnifyService {
     paymentReference?: string;
     amount: number;
     accountReference?: string;
+    /** Destination account number: Lovable resolved the workspace by this, so it is the fallback when the payload has no product reference. */
+    accountNumber?: string;
     payerName?: string | null;
     payerBank?: string | null;
     payerAccountNumber?: string | null;
@@ -776,13 +786,18 @@ export class MonnifyService {
     }
 
     // 2) A transfer into a workspace's reserved account (keyed by Monnify's MNFY|... reference).
-    if (!params.accountReference) {
+    if (!params.accountReference && !params.accountNumber) {
       this.logger.warn(`Collection ${params.transactionReference ?? params.paymentReference} matched no top-up and has no account reference`);
       return;
     }
     // 2a) PIF's own subscription billing NUBAN (spec §5.10 #17) → BillingService, not the wallet.
     const billingWs = await this.prisma.workspace.findFirst({
-      where: { billingAccountRef: params.accountReference },
+      where: {
+        OR: [
+          ...(params.accountReference ? [{ billingAccountRef: params.accountReference }] : []),
+          ...(params.accountNumber ? [{ billingAccountNumber: params.accountNumber }] : []),
+        ],
+      },
       select: { id: true },
     });
     if (billingWs) {
@@ -800,11 +815,18 @@ export class MonnifyService {
     }
 
     const workspace = await this.prisma.workspace.findFirst({
-      where: { OR: [{ monnifyReservedAccountRef: params.accountReference }, { id: params.accountReference }] },
+      where: {
+        OR: [
+          ...(params.accountReference ? [{ monnifyReservedAccountRef: params.accountReference }, { id: params.accountReference }] : []),
+          ...(params.accountNumber ? [{ monnifyReservedAccountNumber: params.accountNumber }] : []),
+        ],
+      },
       select: { id: true },
     });
     if (!workspace) {
-      this.logger.warn(`Collection for account reference ${params.accountReference} matched no workspace`);
+      // Lovable answered 422 here so Monnify keeps retrying; a silent 200 would drop the money's trail.
+      this.logger.error(`Collection for account ${params.accountReference ?? params.accountNumber} matched no workspace`);
+      if (!this.isMockMode) throw new UnprocessableEntityException('Destination account is not linked to a workspace');
       return;
     }
     await this.walletService.recordTopup(workspace.id, {

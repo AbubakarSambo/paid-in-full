@@ -305,9 +305,10 @@ export class WalletService {
     let addedAmount = 0;
     for (const t of txs) {
       if (t.status !== 'PAID' || !(t.amount > 0)) continue;
+      const credit = t.settlementAmount ?? t.amount; // net of Monnify fees, like the webhook path
       const res = await this.recordTopup(workspaceId, {
         reference: t.reference,
-        amount: t.amount,
+        amount: credit,
         payerName: t.payerName,
         payerBank: t.payerBank,
         payerAccountNumber: t.payerAccountNumber,
@@ -316,7 +317,7 @@ export class WalletService {
       });
       if (res.created) {
         added++;
-        addedAmount = round2(addedAmount + t.amount);
+        addedAmount = round2(addedAmount + credit);
       }
     }
     return { checked: txs.length, added, addedAmount };

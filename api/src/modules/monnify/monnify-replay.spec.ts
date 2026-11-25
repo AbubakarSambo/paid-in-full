@@ -46,3 +46,50 @@ describe('collection replay', () => {
     expect(await build(true).svc.getWalletBalance()).toEqual({ available: null, reason: null });
   });
 });
+
+describe('collection amounts: wallet is credited net of fees, invoices settle gross', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('replay passes the gross amount to invoice hooks and the net (settlement) amount to the wallet/billing path', async () => {
+    const { svc } = build();
+    jest.spyOn(svc, 'listReservedAccountTransactions').mockResolvedValue([{ ...tx('t1', 250_000), settlementAmount: 247_850 }] as any);
+    const hook = jest.spyOn(hooks, 'runMonnifyCollectionHooks').mockResolvedValue(false);
+    const fall = jest.spyOn(svc as any, 'handleCollectionResult').mockResolvedValue(undefined);
+    await svc.replayAccountCollections('WS-1');
+    expect((hook.mock.calls[0][0] as any).data.amountPaid).toBe(250_000);
+    expect(fall).toHaveBeenCalledWith(expect.objectContaining({ amount: 247_850 }));
+  });
+
+  it('a live webhook credits settlementAmount to the wallet, falling back to amountPaid when absent', async () => {
+    const { svc, prisma } = build();
+    const wallet = { recordTopup: jest.fn().mockResolvedValue({ created: true, topupId: 'x' }) };
+    (svc as any).walletService = wallet;
+    prisma.walletTopup = { findUnique: jest.fn().mockResolvedValue(null) };
+    prisma.workspace.findFirst = jest.fn(async (q: any) => (JSON.stringify(q.where).includes('billingAccount') ? null : { id: 'ws1' })); // billing lookup misses, wallet lookup hits
+    jest.spyOn(hooks, 'runMonnifyCollectionHooks').mockResolvedValue(false);
+    const body = (data: any) => JSON.stringify({ eventType: 'SUCCESSFUL_TRANSACTION', eventData: { paymentStatus: 'PAID', transactionReference: 'MNFY|1', product: { reference: 'WS-1' }, ...data } });
+    jest.spyOn(svc, 'verifyWebhookSignature').mockReturnValue(true);
+
+    await svc.processWebhook(body({ amountPaid: 250_000, settlementAmount: 247_850 }), 'sig');
+    expect(wallet.recordTopup).toHaveBeenLastCalledWith('ws1', expect.objectContaining({ amount: 247_850 }));
+    await svc.processWebhook(body({ amountPaid: 100_000 }), 'sig');
+    expect(wallet.recordTopup).toHaveBeenLastCalledWith('ws1', expect.objectContaining({ amount: 100_000 }));
+  });
+
+  it('resolves the workspace by destination account number when the payload has no product reference', async () => {
+    const { svc, prisma } = build();
+    (svc as any).walletService = { recordTopup: jest.fn().mockResolvedValue({ created: true, topupId: 'x' }) };
+    prisma.walletTopup = { findUnique: jest.fn().mockResolvedValue(null) };
+    const find = (prisma.workspace.findFirst = jest.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'ws1' }));
+    await (svc as any).handleCollectionResult({ transactionReference: 'T', amount: 5, accountNumber: '6734011681' });
+    expect(find.mock.calls[1][0].where.OR).toEqual([{ monnifyReservedAccountNumber: '6734011681' }]);
+    expect((svc as any).walletService.recordTopup).toHaveBeenCalled();
+  });
+
+  it('answers 422 (so Monnify retries) when a live collection matches no workspace', async () => {
+    const { svc, prisma } = build();
+    prisma.walletTopup = { findUnique: jest.fn().mockResolvedValue(null) };
+    prisma.workspace.findFirst = jest.fn().mockResolvedValue(null);
+    await expect((svc as any).handleCollectionResult({ transactionReference: 'T', amount: 5, accountNumber: '000' })).rejects.toThrow('not linked to a workspace');
+  });
+});
