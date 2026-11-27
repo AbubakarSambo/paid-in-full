@@ -690,7 +690,9 @@ async function main() {
 
       // ── batches & items ────────────────────────────────────────────────────
       console.log('batches…');
-      const BATCH_STATUS: Record<string, string> = { PENDING: 'PENDING', PROCESSING: 'PROCESSING', PARTIAL: 'PARTIAL', SUCCESS: 'SUCCESS', CANCELLED: 'CANCELLED' };
+      const BATCH_STATUS: Record<string, string> = { PENDING: 'PENDING', PROCESSING: 'PROCESSING', PARTIAL: 'PARTIAL', SUCCESS: 'SUCCESS', CANCELLED: 'CANCELLED',
+        // Lovable can mark a whole batch 'failed'. Here a batch whose lines all failed is PENDING (deriveBatchStatus), which keeps the failed line retryable.
+        FAILED: 'PENDING' };
       const ITEM_STATUS: Record<string, string> = { SUCCESS: 'SUCCESS', PARTIAL: 'PENDING', CANCELLED: 'CANCELLED', FAILED: 'FAILED', PENDING: 'PENDING' };
       const itemsByBatch = new Map<string, Row[]>();
       for (const i of biSrc) (itemsByBatch.get(i.batch_id) ?? itemsByBatch.set(i.batch_id, []).get(i.batch_id)!).push(i);
