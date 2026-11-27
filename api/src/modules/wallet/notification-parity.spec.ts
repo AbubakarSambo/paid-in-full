@@ -4,7 +4,7 @@ import { WalletService } from './wallet.service';
 function ledger(opts: { item?: any; requisition?: any; users?: any[] } = {}) {
   const sent: any[] = [];
   const prisma: any = {
-    batchItem: { findUnique: jest.fn().mockResolvedValue(opts.item === undefined ? { id: 'i1', vendorName: 'Acme Ltd', total: 125000.5, createdById: 'u1', requisitionId: 'r1', batch: { batchRef: 'BATCH-9', workspace: { name: 'Yellow Door' } } } : opts.item) },
+    batchItem: { findUnique: jest.fn().mockResolvedValue(opts.item === undefined ? { id: 'i1', vendorName: 'Acme Ltd', total: 125000.5, createdById: 'u1', requisitionId: 'r1', batch: { batchRef: 'BATCH-9', workspace: { name: 'Yellow Door' } }, payouts: [{ createdAt: new Date() }] } : opts.item) },
     requisition: { findUnique: jest.fn().mockResolvedValue(opts.requisition === undefined ? { requestedById: 'u2' } : opts.requisition) },
     user: { findMany: jest.fn().mockResolvedValue(opts.users ?? [{ email: 'Queuer@x.com', displayName: 'Queuer', firstName: 'Q' }, { email: 'req@x.com', displayName: null, firstName: 'Req' }]) },
   };
@@ -34,6 +34,21 @@ describe('"payment made" emails (Lovable parity)', () => {
     const { svc, email } = ledger();
     email.send.mockRejectedValue(new Error('resend down'));
     await expect(svc.notifyPaid(['i1'])).resolves.toBeUndefined();
+  });
+
+  const item = (createdAt: Date[]) => ({ id: 'i1', vendorName: 'Acme Ltd', total: 100, createdById: 'u1', requisitionId: 'r1', batch: { batchRef: 'B', workspace: { name: 'W' } }, payouts: createdAt.map((c) => ({ createdAt: c })) });
+
+  it('never emails about a payment whose legs are old (imported history / re-derived status)', async () => {
+    const old = new Date(Date.now() - 5 * 24 * 3600 * 1000);
+    const { svc, email } = ledger({ item: item([old, old]) });
+    await svc.notifyPaid(['i1']);
+    expect(email.send).not.toHaveBeenCalled();
+  });
+
+  it('still emails when the payment is fresh', async () => {
+    const { svc, email } = ledger({ item: item([new Date(Date.now() - 10 * 60 * 1000)]) });
+    await svc.notifyPaid(['i1']);
+    expect(email.send).toHaveBeenCalledTimes(2);
   });
 
   it('does nothing for an unknown line', async () => {

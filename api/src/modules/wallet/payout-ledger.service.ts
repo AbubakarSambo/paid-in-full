@@ -4,6 +4,9 @@ import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
 import { deriveBatchStatus, deriveLineStatus, toNum } from './payout-math';
 
+/** A "payment made" email is only sent when the newest payout leg is younger than this; older means history, not news. */
+const STALE_PAYMENT_MS = 48 * 60 * 60 * 1000;
+
 export type TransferOutcome = 'SUCCESS' | 'FAILED' | 'REVERSED';
 
 export interface ApplyOutcomeOptions {
@@ -151,9 +154,16 @@ export class PayoutLedgerService {
       try {
         const item = await this.prisma.batchItem.findUnique({
           where: { id: itemId },
-          include: { batch: { select: { batchRef: true, workspace: { select: { name: true } } } } },
+          include: {
+            batch: { select: { batchRef: true, workspace: { select: { name: true } } } },
+            payouts: { select: { createdAt: true } },
+          },
         });
         if (!item) continue;
+        // Only announce payments that are actually fresh. Anything whose legs were created long ago is history (e.g. imported from
+        // Lovable, or re-derived by a recompute) and must never email people about a payment that happened days or weeks ago.
+        const newestLeg = item.payouts.reduce((m, p) => Math.max(m, p.createdAt.getTime()), 0);
+        if (newestLeg && Date.now() - newestLeg > STALE_PAYMENT_MS) continue;
         const requisition = item.requisitionId
           ? await this.prisma.requisition.findUnique({ where: { id: item.requisitionId }, select: { requestedById: true } })
           : null;
