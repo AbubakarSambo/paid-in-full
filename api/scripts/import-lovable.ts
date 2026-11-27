@@ -756,6 +756,9 @@ async function main() {
           destination_account_number: leg === 'VENDOR' ? it.vendor_acct_no : null, destination_bank_code: leg === 'VENDOR' ? it.vendor_bank_code : null,
           destination_account_name: leg === 'VENDOR' ? it.vendor_name : null,
           failure_reason: status === 'FAILED' ? p.message : null, completed_at: iso(p.created_at), created_at: iso(p.created_at), updated_at: iso(p.created_at),
+          // Imported payouts are history, already settled in Lovable. Without this, the 1-minute recovery job re-checks every FAILED
+          // leg (status_checked_at is null), recomputes its item and can flip item status / send "payment made" emails.
+          status_checked_at: iso(p.created_at),
           transfer_reference: p.combined_reference, message: p.message, payout_group_id: p.payout_group_id,
         });
       }
